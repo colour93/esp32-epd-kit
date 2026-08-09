@@ -10,6 +10,16 @@
 
 namespace epd {
 
+#ifndef EPD_TOOLKIT_RELEASE
+void bleDebugLog(const String& value) {
+  Serial.print("[toolkit][ble] ");
+  Serial.println(value);
+}
+#define BLE_DEBUG_LOG(value) bleDebugLog(value)
+#else
+#define BLE_DEBUG_LOG(value) ((void)0)
+#endif
+
 constexpr size_t BleProvisioningService::kMaxMessageBytes;
 constexpr uint32_t BleProvisioningService::kAssemblyTimeoutMs;
 constexpr uint32_t BleProvisioningService::kHardSessionMs;
@@ -155,10 +165,16 @@ void BleProvisioningService::onConnect(NimBLEConnInfo& connection) {
   staged_ = current_;
   assembler_.clear();
   last_activity_at_ = millis();
+  BLE_DEBUG_LOG(String("connected: handle=") + connection_handle_ +
+                ", encrypted=" + (authenticated_ ? "yes" : "no"));
   if (server_) server_->updateConnParams(connection_handle_, 24, 48, 0, 180);
 }
 
-void BleProvisioningService::onDisconnect(NimBLEConnInfo&, int) {
+void BleProvisioningService::onDisconnect(NimBLEConnInfo&, int reason) {
+  BLE_DEBUG_LOG(String("disconnected: handle=") + connection_handle_ +
+                ", reason=" + reason +
+                ", buffered_bytes=" +
+                static_cast<unsigned long>(assembler_.size()));
   connected_ = false;
   authenticated_ = false;
   connection_handle_ = BLE_HS_CONN_HANDLE_NONE;
@@ -170,34 +186,59 @@ void BleProvisioningService::onDisconnect(NimBLEConnInfo&, int) {
 void BleProvisioningService::onAuthenticationComplete(
     NimBLEConnInfo& connection) {
   authenticated_ = connection.isEncrypted() && connection.isAuthenticated();
+  BLE_DEBUG_LOG(String("authentication: encrypted=") +
+                (connection.isEncrypted() ? "yes" : "no") +
+                ", authenticated=" + (authenticated_ ? "yes" : "no"));
   if (!authenticated_ && server_) server_->disconnect(connection.getConnHandle());
 }
 
-void BleProvisioningService::onMtuChange(uint16_t mtu) { mtu_ = mtu; }
+void BleProvisioningService::onMtuChange(uint16_t mtu) {
+  mtu_ = mtu;
+  BLE_DEBUG_LOG(String("mtu changed: mtu=") + mtu_ +
+                ", payload_bytes=" + (mtu_ > 3 ? mtu_ - 3 : 20));
+}
 
 void BleProvisioningService::onWrite(NimBLECharacteristic* characteristic,
                                      NimBLEConnInfo& connection) {
   if (characteristic != rx_ || !connection.isEncrypted()) return;
   const std::string value = characteristic->getValue();
   if (value.empty()) return;
+  [[maybe_unused]] const size_t buffered_before = assembler_.size();
   last_activity_at_ = millis();
   const uint32_t hard_deadline = session_started_at_ + kHardSessionMs;
   const uint32_t idle_deadline =
       last_activity_at_ + current_.power.ble_window_sec * 1000U;
   advertising_deadline_ = std::min(hard_deadline, idle_deadline);
 
+  BLE_DEBUG_LOG(String("rx fragment: bytes=") +
+                static_cast<unsigned long>(value.size()) +
+                ", buffered_before=" +
+                static_cast<unsigned long>(buffered_before));
+
   const core::NdjsonFeedResult assembled = assembler_.feed(
       reinterpret_cast<const uint8_t*>(value.data()), value.size(),
       last_activity_at_);
   if (assembled.status == core::NdjsonFeedStatus::kTimeout) {
+    BLE_DEBUG_LOG(String("rx assembly timeout: buffered_bytes=") +
+                  static_cast<unsigned long>(buffered_before) +
+                  ", next_fragment_bytes=" +
+                  static_cast<unsigned long>(value.size()));
     sendError(0, "timeout", "message assembly timed out");
     return;
   }
   if (assembled.status == core::NdjsonFeedStatus::kTooLarge) {
+    BLE_DEBUG_LOG(String("rx assembly too large: limit_bytes=") +
+                  static_cast<unsigned long>(kMaxMessageBytes));
     sendError(0, "too_large", "message exceeds 8192 bytes");
     return;
   }
+  if (assembled.lines.empty()) {
+    BLE_DEBUG_LOG(String("rx buffered: bytes=") +
+                  static_cast<unsigned long>(assembler_.size()));
+  }
   for (const std::string& assembled_line : assembled.lines) {
+    BLE_DEBUG_LOG(String("rx message complete: bytes=") +
+                  static_cast<unsigned long>(assembled_line.size()));
     if (request_in_progress_) {
       assembler_.clear();
       sendError(0, "busy", "one request is already being processed");
@@ -224,10 +265,19 @@ void BleProvisioningService::sendDocument(JsonDocument& document) {
   payload += '\n';
   const size_t chunk_size =
       std::max<size_t>(20, std::min<size_t>(244, mtu_ > 3 ? mtu_ - 3 : 20));
+  BLE_DEBUG_LOG(String("tx response: id=") +
+                document["id"].as<unsigned long>() +
+                ", ok=" + (document["ok"].as<bool>() ? "yes" : "no") +
+                ", bytes=" + static_cast<unsigned long>(payload.length()) +
+                ", chunk_bytes=" + static_cast<unsigned long>(chunk_size));
   for (size_t offset = 0; offset < payload.length(); offset += chunk_size) {
     const size_t length = std::min(chunk_size, payload.length() - offset);
     if (!tx_->indicate(reinterpret_cast<const uint8_t*>(payload.c_str() + offset),
                        length, connection_handle_)) {
+      BLE_DEBUG_LOG(String("tx indication failed: offset=") +
+                    static_cast<unsigned long>(offset) +
+                    ", fragment_bytes=" +
+                    static_cast<unsigned long>(length));
       break;
     }
     delay(12);
@@ -236,6 +286,7 @@ void BleProvisioningService::sendDocument(JsonDocument& document) {
 
 void BleProvisioningService::sendError(uint32_t id, const char* code,
                                        const String& message) {
+  BLE_DEBUG_LOG(String("request error: id=") + id + ", code=" + code);
   JsonDocument response;
   response["v"] = 1;
   response["id"] = id;
@@ -275,6 +326,8 @@ void BleProvisioningService::processLine(const String& line) {
     return;
   }
   const String operation = request["op"].as<const char*>();
+  BLE_DEBUG_LOG(String("rx request: id=") + id + ", op=" + operation +
+                ", bytes=" + static_cast<unsigned long>(line.length()));
   JsonVariantConst args = request["args"];
   if (!args.is<JsonObjectConst>()) {
     sendError(id, "invalid_request", "args must be an object");
@@ -507,7 +560,11 @@ void BleProvisioningService::loop() {
   if (!active_) return;
   ensureFactoryButtonConfirmation();
   const uint32_t now = millis();
+  [[maybe_unused]] const size_t buffered_bytes = assembler_.size();
   if (assembler_.expire(now)) {
+    BLE_DEBUG_LOG(String("rx assembly timeout: buffered_bytes=") +
+                  static_cast<unsigned long>(buffered_bytes) +
+                  ", source=loop");
     sendError(0, "timeout", "message assembly timed out");
   }
   if (connected_ && now - last_activity_at_ > current_.power.ble_window_sec * 1000U) {
