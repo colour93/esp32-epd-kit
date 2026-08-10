@@ -1,161 +1,134 @@
 #include <Arduino.h>
 
 #include <NimBLEDevice.h>
+#include <Preferences.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
-#include <time.h>
 
 #include <algorithm>
 
 #include "toolkit/app.h"
 #include "toolkit/ble_provisioning.h"
 #include "toolkit/codex_usage_app.h"
-#include "toolkit/codex_usage_client.h"
 #include "toolkit/config_store.h"
 #include "toolkit/display_manager.h"
 #include "toolkit/hardware.h"
-#include "toolkit/network_manager.h"
-#include "toolkit/usage_snapshot_store.h"
+#include "toolkit/log.h"
+#include "toolkit/resource_store.h"
+#include "toolkit/serial_recovery.h"
 
 namespace {
 
-constexpr uint32_t kRuntimeRtcMagic = 0x52554E31U;  // "RUN1"
-constexpr uint32_t kCriticalSleepSeconds = 6U * 3600U;
-
-struct RuntimeRtcState {
-  uint32_t magic;
-  uint8_t consecutive_failures;
-  bool critical_battery_latched;
-  uint16_t reserved;
-};
-
-RTC_DATA_ATTR RuntimeRtcState g_runtime_state{};
-
-enum class BootAction : uint8_t {
-  kNormal,
-  kConfiguration,
-  kFactoryResetPreparation,
-};
+constexpr uint64_t kCriticalSleepMicros = 30ULL * 60ULL * 1000000ULL;
+constexpr uint32_t kBatterySampleIntervalMs = 60000U;
 
 epd::ConfigStore g_config_store;
-epd::UsageSnapshotStore g_snapshot_store;
-epd::NetworkManager g_network;
-epd::CodexUsageClient g_codex_client;
-epd::CodexUsageApp g_codex_app;
-epd::AppRegistry g_registry(g_codex_app);
+epd::ResourceStore g_resources;
+epd::CodexUsageRenderer g_codex_renderer;
+epd::RendererRegistry g_renderers(g_codex_renderer);
 epd::DisplayManager g_display;
-epd::BleProvisioningService g_ble(g_config_store, g_network, g_registry,
-                                  g_display);
+epd::BleProtocolService g_ble(g_config_store, g_resources, g_renderers,
+                              g_display);
+epd::SerialRecoveryConsole g_serial(g_config_store, g_ble);
 
-#ifndef EPD_TOOLKIT_RELEASE
-void debugLog(const String& value) {
-  Serial.print("[toolkit] ");
-  Serial.println(value);
-}
-#define TOOLKIT_LOG(value) debugLog(value)
-#else
-#define TOOLKIT_LOG(value) ((void)0)
-#endif
+uint16_t g_battery_mv = 0;
+uint32_t g_last_battery_sample = 0;
+bool g_key_pressed = false;
+uint32_t g_key_changed_at = 0;
+uint32_t g_last_storage_error_at = 0;
 
-bool isColdOrBrownoutReset() {
-  const esp_reset_reason_t reason = esp_reset_reason();
-  return reason == ESP_RST_POWERON || reason == ESP_RST_BROWNOUT ||
-         reason == ESP_RST_UNKNOWN;
-}
-
-void initializeRuntimeState() {
-  if (g_runtime_state.magic != kRuntimeRtcMagic || isColdOrBrownoutReset()) {
-    g_runtime_state = {};
-    g_runtime_state.magic = kRuntimeRtcMagic;
-  }
-}
-
-uint16_t readBatteryMillivolts() {
+uint16_t readBatteryMillivolts(const epd::DeviceConfig& config) {
+  if (!config.hardware.battery.enabled) return 0;
   pinMode(epd::hardware::kBatteryAdc, INPUT);
   analogReadResolution(12);
   analogSetPinAttenuation(epd::hardware::kBatteryAdc, ADC_11db);
   delay(5);
-  analogReadMilliVolts(epd::hardware::kBatteryAdc);  // Discard first sample.
-
+  analogReadMilliVolts(epd::hardware::kBatteryAdc);
   uint16_t samples[9]{};
   for (uint8_t index = 0; index < 9; ++index) {
     samples[index] = analogReadMilliVolts(epd::hardware::kBatteryAdc);
     delay(2);
   }
   std::sort(std::begin(samples), std::end(samples));
-  // The Waveshare schematic exposes one third of VBAT on GPIO36.
   const uint32_t millivolts = static_cast<uint32_t>(samples[4]) * 3U;
   return millivolts >= 2500U && millivolts <= 5000U
              ? static_cast<uint16_t>(millivolts)
              : 0;
 }
 
-uint8_t batteryPercent(uint16_t millivolts) {
-  if (millivolts == 0) return 100;
-  if (millivolts <= 3300) return 0;
-  if (millivolts >= 4200) return 100;
-  return static_cast<uint8_t>((millivolts - 3300U) * 100U / 900U);
-}
-
-BootAction readBootAction() {
-  pinMode(epd::hardware::kUserKey, INPUT_PULLUP);
-  if (digitalRead(epd::hardware::kUserKey) != LOW) return BootAction::kNormal;
-
-  const uint32_t pressed_at = millis();
-  while (digitalRead(epd::hardware::kUserKey) == LOW &&
-         millis() - pressed_at < 10000U) {
-    delay(20);
+void initializeFreshSecurity() {
+  Preferences security;
+  if (security.begin("epd_sec3", false)) {
+    security.clear();
+    security.end();
   }
-  const uint32_t held_ms = millis() - pressed_at;
-  if (held_ms >= 10000U) return BootAction::kFactoryResetPreparation;
-  if (held_ms >= 3000U) return BootAction::kConfiguration;
-  return BootAction::kNormal;  // Short press requests the normal immediate query.
+  NimBLEDevice::init("EPD-KIT-RESET");
+  NimBLEDevice::deleteAllBonds();
+  NimBLEDevice::deinit(true);
 }
 
-void setFailure(epd::SyncStatus status, const String& detail,
-                uint16_t battery_mv) {
-  epd::CodexAppState& state = g_codex_app.codexState();
-  state.battery_mv = battery_mv;
-  state.usage.status = status;
-  state.usage.status_detail = detail;
+epd::RenderContext renderContext() {
+  epd::RenderContext context;
+  context.now = static_cast<uint64_t>(time(nullptr));
+  context.battery_mv = g_battery_mv;
+  context.battery_enabled = g_ble.config().hardware.battery.enabled;
+  context.connected = g_ble.sessionReady();
+  context.utc_offset_minutes = g_ble.utcOffsetMinutes();
+  return context;
 }
 
-uint32_t configuredBackoff(const epd::DeviceConfig& config) {
-  const size_t index =
-      g_runtime_state.consecutive_failures == 0
-          ? 0
-          : std::min<size_t>(g_runtime_state.consecutive_failures - 1, 3);
-  return config.power.offline_backoff_sec[index];
+epd::PresentResult renderCurrent(bool force_full) {
+  const epd::DeviceConfig& config = g_ble.config();
+  epd::IRenderer* renderer = g_renderers.find(config.view.renderer_id);
+  if (renderer == nullptr) renderer = &g_codex_renderer;
+  const epd::ResourceRecord* resource =
+      g_resources.get(config.view.resource_key);
+  TOOLKIT_LOG("render", String("build renderer=") + renderer->id() +
+                            " resource=" + config.view.resource_key +
+                            " force_full=" + (force_full ? "yes" : "no"));
+  g_display.renderView(*renderer, resource, renderContext());
+  return g_display.present(config.display, force_full);
 }
 
-void waitForKeyRelease() {
-  const uint32_t started_at = millis();
-  while (digitalRead(epd::hardware::kUserKey) == LOW &&
-         millis() - started_at < 2000U) {
-    delay(10);
-  }
-}
-
-[[noreturn]] void enterDeepSleep(uint32_t seconds, bool timer_enabled) {
-  g_network.disconnect();
+[[noreturn]] void enterCriticalSleep(const epd::DeviceConfig& config) {
+  TOOLKIT_LOG("power", String("critical battery ") + g_battery_mv +
+                           "mV; BLE and display suspended");
   g_ble.stop();
-  waitForKeyRelease();
-
-  TOOLKIT_LOG(String("deep sleep: timer=") +
-              (timer_enabled ? "on" : "off") + ", seconds=" + seconds);
-
+  if (!g_display.lowBatteryLatched()) {
+    g_display.renderLowBattery(g_battery_mv);
+    g_display.present(config.display, true);
+    g_display.setLowBatteryLatched(true);
+  }
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-  // GPIO12 is a boot strap. Do not retain an RTC pull-up across deep sleep;
-  // the board's key circuit provides the idle level and a pressed key is LOW.
-  rtc_gpio_pullup_dis(static_cast<gpio_num_t>(epd::hardware::kUserKey));
-  rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(epd::hardware::kUserKey));
-  esp_sleep_enable_ext0_wakeup(
-      static_cast<gpio_num_t>(epd::hardware::kUserKey), 0);
-  if (timer_enabled) {
-    const uint64_t micros = static_cast<uint64_t>(std::max<uint32_t>(seconds, 60U)) *
-                            1000000ULL;
-    esp_sleep_enable_timer_wakeup(micros);
+  esp_sleep_enable_timer_wakeup(kCriticalSleepMicros);
+#ifndef EPD_TOOLKIT_RELEASE
+  Serial.flush();
+#endif
+  esp_deep_sleep_start();
+  abort();
+}
+
+[[noreturn]] void enterScheduledSleep(const epd::DeviceConfig& config) {
+  TOOLKIT_LOG("power", String("sync window complete; sleeping ") +
+                           config.power.wake_interval_sec + "s");
+  renderCurrent(false);
+  g_ble.stop();
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  esp_sleep_enable_timer_wakeup(
+      static_cast<uint64_t>(config.power.wake_interval_sec) * 1000000ULL);
+  if (config.hardware.io12_mode == epd::Io12Mode::kKey) {
+    const uint32_t release_deadline = millis() + 2000U;
+    while (digitalRead(epd::hardware::kUserKey) == LOW &&
+           static_cast<int32_t>(millis() - release_deadline) < 0) {
+      delay(10);
+    }
+    rtc_gpio_pullup_dis(
+        static_cast<gpio_num_t>(epd::hardware::kUserKey));
+    rtc_gpio_pulldown_dis(
+        static_cast<gpio_num_t>(epd::hardware::kUserKey));
+    esp_sleep_enable_ext0_wakeup(
+        static_cast<gpio_num_t>(epd::hardware::kUserKey), 0);
   }
 #ifndef EPD_TOOLKIT_RELEASE
   Serial.flush();
@@ -164,185 +137,154 @@ void waitForKeyRelease() {
   abort();
 }
 
-bool runBleSession(epd::DeviceConfig& config, uint16_t battery_mv,
-                   bool reset_preparation) {
-  const bool was_configured = config.isConfigured();
-  const uint32_t passkey = 100000U + esp_random() % 900000U;
-  if (reset_preparation) {
-    g_display.renderFactoryResetConfirmation();
-    g_display.present(config.display);
-    delay(1800);
+void handleKey() {
+  if (g_ble.config().hardware.io12_mode != epd::Io12Mode::kKey) return;
+  const bool pressed = digitalRead(epd::hardware::kUserKey) == LOW;
+  if (pressed == g_key_pressed) return;
+  if (millis() - g_key_changed_at < 35U) return;
+  g_key_changed_at = millis();
+  g_key_pressed = pressed;
+  if (!pressed) {
+    TOOLKIT_LOG("input", "IO12 short press");
+    g_ble.emitKeyPressed();
   }
-  g_display.renderPairing(passkey, was_configured);
-  g_display.present(config.display);
-
-  const uint32_t advertising_seconds =
-      was_configured ? config.power.ble_window_sec : 10U * 60U;
-  TOOLKIT_LOG(String("BLE session: configured=") +
-              (was_configured ? "yes" : "no") +
-              ", window_sec=" + advertising_seconds);
-  if (!g_ble.begin(config, batteryPercent(battery_mv), passkey,
-                   advertising_seconds)) {
-    TOOLKIT_LOG("BLE initialization failed");
-    return false;
-  }
-
-  while (g_ble.active()) {
-    g_ble.loop();
-    if (g_ble.refreshRequested() || g_ble.factoryResetRequested()) break;
-    delay(10);
-  }
-  const bool refresh_requested = g_ble.refreshRequested();
-  const bool factory_reset_requested = g_ble.factoryResetRequested();
-  if (g_ble.configCommitted()) config = g_ble.currentConfig();
-  TOOLKIT_LOG(String("BLE session ended: committed=") +
-              (g_ble.configCommitted() ? "yes" : "no") +
-              ", refresh=" + (refresh_requested ? "yes" : "no"));
-  g_ble.stop();
-
-  if (factory_reset_requested) {
-    delay(250);
-    ESP.restart();
-  }
-  return refresh_requested || g_ble.configCommitted();
-}
-
-void renderAndPresent(const epd::DeviceConfig& config, bool force_full) {
-  g_display.renderApp(g_codex_app);
-  [[maybe_unused]] const epd::PresentResult result =
-      g_display.present(config.display, force_full);
-#ifndef EPD_TOOLKIT_RELEASE
-  const char* name = result == epd::PresentResult::kFull
-                         ? "full"
-                         : result == epd::PresentResult::kPartial ? "partial"
-                                                                 : "unchanged";
-  TOOLKIT_LOG("display: " + String(name));
-#endif
 }
 
 }  // namespace
 
 void setup() {
-#ifndef EPD_TOOLKIT_RELEASE
-  Serial.begin(115200);
-  delay(30);
-#endif
-  TOOLKIT_LOG(String("boot: firmware=") + EPD_TOOLKIT_VERSION +
-              ", reset_reason=" + static_cast<int>(esp_reset_reason()) +
-              ", wakeup_cause=" +
-              static_cast<int>(esp_sleep_get_wakeup_cause()));
-  initializeRuntimeState();
-  const bool force_full = isColdOrBrownoutReset();
-  const BootAction boot_action = readBootAction();
-  const uint16_t battery_mv = readBatteryMillivolts();
-  TOOLKIT_LOG(String("battery_mv=") + battery_mv + ", boot_action=" +
-              static_cast<int>(boot_action));
-
+  g_serial.begin();
+  TOOLKIT_LOG("core", String("boot firmware=") + EPD_TOOLKIT_VERSION);
   epd::DeviceConfig config;
-  const bool config_loaded = g_config_store.load(config);
-  if (!config_loaded) config = epd::DeviceConfig{};
-  TOOLKIT_LOG(String("config: loaded=") +
-              (config_loaded ? "yes" : "no") + ", configured=" +
-              (config.isConfigured() ? "yes" : "no"));
-
-  g_display.begin();
-  g_snapshot_store.load(g_codex_app.codexState().usage);
-  g_codex_app.codexState().battery_mv = battery_mv;
-
-  if (battery_mv > 0 && battery_mv <= config.battery.critical_mv) {
-    g_runtime_state.critical_battery_latched = true;
-  } else if (battery_mv == 0 || battery_mv >= config.battery.recovery_mv) {
-    g_runtime_state.critical_battery_latched = false;
-  }
-  if (g_runtime_state.critical_battery_latched) {
-    TOOLKIT_LOG("critical battery latch active; radio disabled");
-    setFailure(epd::SyncStatus::kLowBattery, "radio disabled", battery_mv);
-    g_display.renderLowBattery(battery_mv);
-    g_display.present(config.display, force_full);
-    enterDeepSleep(kCriticalSleepSeconds, true);
-  }
-
-  const bool needs_configuration = !config_loaded || !config.isConfigured();
-  const bool requested_configuration =
-      boot_action == BootAction::kConfiguration ||
-      boot_action == BootAction::kFactoryResetPreparation;
-  bool refresh_after_ble = false;
-  if (needs_configuration || requested_configuration) {
-    refresh_after_ble = runBleSession(
-        config, battery_mv,
-        boot_action == BootAction::kFactoryResetPreparation);
-    if (!config.isConfigured()) {
-      // Provisioning resumes only after a power cycle or physical key press.
-      enterDeepSleep(config.power.poll_interval_sec, false);
+  const bool loaded = g_config_store.load(config);
+  if (!loaded) {
+    config = epd::DeviceConfig{};
+    config.revision = 1;
+    String save_error;
+    if (!g_config_store.save(config, save_error)) {
+      TOOLKIT_LOG("config", String("default save failed: ") + save_error);
     }
-    if (!refresh_after_ble && requested_configuration) {
-      renderAndPresent(config, false);
-      enterDeepSleep(config.power.poll_interval_sec, true);
-    }
+    initializeFreshSecurity();
+    TOOLKIT_LOG("security", "fresh security state initialized");
   }
-
-  epd::IApp* app = g_registry.find(config.active_app);
-  String validation_error;
-  if (app == nullptr || !app->validateConfig(config, validation_error)) {
-    setFailure(epd::SyncStatus::kAuthExpired, validation_error, battery_mv);
-    renderAndPresent(config, force_full);
-    enterDeepSleep(config.power.poll_interval_sec, false);
+  String resource_error;
+  if (!g_resources.load(resource_error)) {
+    TOOLKIT_LOG("resource", String("load failed: ") + resource_error);
   }
+  TOOLKIT_LOG("core", String("config revision=") + config.revision +
+                          " battery=" +
+                          (config.hardware.battery.enabled ? "enabled" : "disabled") +
+                          " io12=" +
+                          (config.hardware.io12_mode == epd::Io12Mode::kKey
+                               ? "key"
+                               : "disabled") +
+                          " power=" +
+                          (config.power.profile == epd::PowerProfile::kMains
+                               ? "mains"
+                               : "battery"));
 
-  if (epd::NetworkManager::clockValid() && config.codex.expires_at > 0 &&
-      static_cast<uint64_t>(time(nullptr)) >= config.codex.expires_at) {
-    setFailure(epd::SyncStatus::kAuthExpired, "reauthorization required",
-               battery_mv);
-    renderAndPresent(config, force_full);
-    enterDeepSleep(config.power.poll_interval_sec, false);
-  }
-
-  uint32_t next_wake_seconds = config.power.poll_interval_sec;
-  bool timer_enabled = true;
-  TOOLKIT_LOG("Wi-Fi connect started");
-  if (!g_network.connect(config.wifi)) {
-    if (g_runtime_state.consecutive_failures < UINT8_MAX) {
-      ++g_runtime_state.consecutive_failures;
-    }
-    setFailure(epd::SyncStatus::kOffline, g_network.lastError(), battery_mv);
-    next_wake_seconds = configuredBackoff(config);
-    TOOLKIT_LOG("Wi-Fi failed: " + g_network.lastError());
-  } else if (!g_network.syncClock(config.device)) {
-    if (g_runtime_state.consecutive_failures < UINT8_MAX) {
-      ++g_runtime_state.consecutive_failures;
-    }
-    setFailure(epd::SyncStatus::kTimeError, g_network.lastError(), battery_mv);
-    next_wake_seconds = configuredBackoff(config);
-    TOOLKIT_LOG("time sync failed: " + g_network.lastError());
+  if (config.hardware.io12_mode == epd::Io12Mode::kKey) {
+    pinMode(epd::hardware::kUserKey, INPUT_PULLUP);
+    TOOLKIT_LOG("input", "IO12 key input enabled");
   } else {
-    TOOLKIT_LOG("network ready; application update started");
-    epd::AppContext context{config, g_network, g_codex_client, battery_mv};
-    const epd::UpdateResult update = app->update(context);
-    TOOLKIT_LOG(String("application update: status=") +
-                epd::syncStatusCode(update.status));
-    if (update.status == epd::SyncStatus::kOk) {
-      g_runtime_state.consecutive_failures = 0;
-      next_wake_seconds = app->nextWakeSeconds(update);
-      String snapshot_error;
-      if (!g_snapshot_store.saveIfDue(g_codex_app.codexState().usage,
-                                      static_cast<uint64_t>(time(nullptr)),
-                                      snapshot_error)) {
-        TOOLKIT_LOG("usage snapshot write failed: " + snapshot_error);
-      }
-    } else if (update.status == epd::SyncStatus::kAuthExpired) {
-      // A stale successful snapshot stays visible, but periodic radio wakeups stop.
-      timer_enabled = false;
-    } else {
-      if (g_runtime_state.consecutive_failures < UINT8_MAX) {
-        ++g_runtime_state.consecutive_failures;
-      }
-      next_wake_seconds = configuredBackoff(config);
-    }
+    TOOLKIT_LOG("input", "IO12 left high impedance");
   }
 
-  g_network.disconnect();
-  renderAndPresent(config, force_full);
-  enterDeepSleep(next_wake_seconds, timer_enabled);
+  g_battery_mv = readBatteryMillivolts(config);
+  if (config.hardware.battery.enabled) {
+    TOOLKIT_LOG("power", String("battery sample=") + g_battery_mv + "mV");
+  } else {
+    TOOLKIT_LOG("power", "battery ADC disabled");
+  }
+  g_display.begin();
+  if (!config.hardware.battery.enabled) {
+    g_display.setLowBatteryLatched(false);
+  } else if (g_battery_mv >= config.hardware.battery.recovery_mv) {
+    g_display.setLowBatteryLatched(false);
+  } else if ((g_battery_mv > 0 &&
+              g_battery_mv <= config.hardware.battery.critical_mv) ||
+             (g_display.lowBatteryLatched() &&
+              g_battery_mv < config.hardware.battery.recovery_mv)) {
+    enterCriticalSleep(config);
+  }
+  const uint32_t passkey = 100000U + esp_random() % 900000U;
+  if (!g_ble.begin(config, g_battery_mv, passkey)) {
+    TOOLKIT_LOG("ble", "BLE v3 initialization failed");
+  } else {
+    TOOLKIT_LOG("ble", "BLE v3 service ready");
+  }
+  const bool deep_sleep_wake =
+      esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_UNDEFINED;
+  if (g_ble.owned() && !deep_sleep_wake) {
+    const epd::PresentResult result = renderCurrent(true);
+    TOOLKIT_LOG("display", String("initial refresh result=") +
+                               (result == epd::PresentResult::kFull
+                                    ? "full"
+                                    : result == epd::PresentResult::kPartial
+                                          ? "partial"
+                                          : "unchanged"));
+  }
+  g_last_battery_sample = millis();
 }
 
-void loop() { delay(1000); }
+void loop() {
+  g_serial.loop();
+  g_ble.loop();
+  handleKey();
+
+  uint32_t factory_code = 0;
+  if (g_ble.takeFactoryCode(factory_code)) {
+    TOOLKIT_LOG("security", "showing factory reset confirmation");
+    g_display.renderFactoryResetConfirmation(factory_code);
+    g_display.present(g_ble.config().display);
+  }
+
+  bool force_full = false;
+  if (g_ble.takeRenderRequest(force_full)) {
+    TOOLKIT_LOG("display", String("refresh started mode=") +
+                               (force_full ? "full" : "auto"));
+    g_ble.emitDisplayStarted(force_full);
+    const epd::PresentResult result = renderCurrent(force_full);
+    g_ble.emitDisplayCompleted(
+        result == epd::PresentResult::kFull
+            ? "full"
+            : result == epd::PresentResult::kPartial ? "partial" : "unchanged");
+    TOOLKIT_LOG("display", String("refresh completed result=") +
+                               (result == epd::PresentResult::kFull
+                                    ? "full"
+                                    : result == epd::PresentResult::kPartial
+                                          ? "partial"
+                                          : "unchanged"));
+  }
+
+  if (g_ble.config().hardware.battery.enabled &&
+      millis() - g_last_battery_sample >= kBatterySampleIntervalMs) {
+    g_last_battery_sample = millis();
+    g_battery_mv = readBatteryMillivolts(g_ble.config());
+    TOOLKIT_LOG("power", String("battery sample=") + g_battery_mv + "mV");
+    g_ble.updateBattery(g_battery_mv);
+    if (g_battery_mv > 0 &&
+        g_battery_mv <= g_ble.config().hardware.battery.critical_mv) {
+      enterCriticalSleep(g_ble.config());
+    }
+  }
+
+  String save_error;
+  if (!g_resources.saveIfDue(static_cast<uint64_t>(time(nullptr)), false,
+                             save_error) &&
+      millis() - g_last_storage_error_at >= 5000U) {
+    g_last_storage_error_at = millis();
+    TOOLKIT_LOG("resource", String("snapshot save failed: ") + save_error);
+  }
+  const bool factory_reset = g_ble.takeFactoryResetRequest();
+  const bool restart = g_ble.takeRestartRequest();
+  if (factory_reset || restart) {
+    TOOLKIT_LOG("core", factory_reset ? "factory reset restart" : "restart requested");
+    delay(250);
+    ESP.restart();
+  }
+  if (g_ble.takeSleepRequest()) {
+    enterScheduledSleep(g_ble.config());
+  }
+  delay(10);
+}

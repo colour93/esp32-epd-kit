@@ -4,30 +4,15 @@ namespace epd {
 
 const char* syncStatusCode(SyncStatus status) {
   switch (status) {
-    case SyncStatus::kNever:
-      return "SETUP";
-    case SyncStatus::kOk:
-      return "OK";
-    case SyncStatus::kOffline:
-      return "OFFLINE";
-    case SyncStatus::kAuthExpired:
-      return "AUTH";
-    case SyncStatus::kForbidden:
-      return "DENIED";
-    case SyncStatus::kThrottled:
-      return "HTTP 429";
-    case SyncStatus::kProxyError:
-      return "PROXY";
-    case SyncStatus::kTlsError:
-      return "TLS";
-    case SyncStatus::kTimeError:
-      return "TIME";
-    case SyncStatus::kProtocolError:
-      return "DATA";
-    case SyncStatus::kLowBattery:
-      return "LOW BAT";
+    case SyncStatus::kWaiting: return "waiting";
+    case SyncStatus::kFresh: return "fresh";
+    case SyncStatus::kStale: return "stale";
+    case SyncStatus::kAuthRequired: return "auth_required";
+    case SyncStatus::kUnavailable: return "unavailable";
+    case SyncStatus::kInvalid: return "invalid";
+    case SyncStatus::kLowBattery: return "low_battery";
   }
-  return "ERROR";
+  return "invalid";
 }
 
 }  // namespace epd

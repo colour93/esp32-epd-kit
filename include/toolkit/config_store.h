@@ -28,7 +28,7 @@ class ConfigStore {
     String payload;
   };
 
-  static constexpr uint32_t kSlotMagic = 0x43464731U;  // "CFG1"
+  static constexpr uint32_t kSlotMagic = 0x43464733U;  // "CFG3"
   static constexpr size_t kMaxPayloadBytes = 8192;
 
   SlotData readSlot(Preferences& preferences, const char* key);
@@ -36,4 +36,3 @@ class ConfigStore {
 };
 
 }  // namespace epd
-

@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "toolkit/core_logic.h"
+#include "toolkit/log.h"
 
 namespace epd {
 
@@ -46,10 +47,14 @@ ConfigStore::SlotData ConfigStore::readSlot(Preferences& preferences,
 }
 
 bool ConfigStore::load(DeviceConfig& config) {
+  TOOLKIT_LOG("config", "loading NVS snapshot");
   Preferences preferences;
   // Read-write mode creates the namespace on a pristine NVS partition. This
   // avoids Preferences logging NOT_FOUND as an error during normal first boot.
-  if (!preferences.begin("epd_cfg", false)) return false;
+  if (!preferences.begin("epd_cfg3", false)) {
+    TOOLKIT_LOG("config", "cannot open NVS namespace");
+    return false;
+  }
   const SlotData a = readSlot(preferences, "slot_a");
   const SlotData b = readSlot(preferences, "slot_b");
   const uint8_t active = preferences.getUChar("active", 0);
@@ -61,29 +66,45 @@ bool ConfigStore::load(DeviceConfig& config) {
                                  ? &a
                                  : choice == core::ConfigSlotChoice::kB ? &b
                                                                         : nullptr;
-  if (selected == nullptr) return false;
+  if (selected == nullptr) {
+    TOOLKIT_LOG("config", "no valid config slot");
+    return false;
+  }
 
   JsonDocument document;
-  if (deserializeJson(document, selected->payload) != DeserializationError::Ok) return false;
+  if (deserializeJson(document, selected->payload) != DeserializationError::Ok) {
+    TOOLKIT_LOG("config", "config JSON decode failed");
+    return false;
+  }
   String error;
-  return configFromJson(document.as<JsonVariantConst>(), config, error);
+  if (!configFromJson(document.as<JsonVariantConst>(), config, error)) {
+    TOOLKIT_LOG("config", String("config validation failed: ") + error);
+    return false;
+  }
+  TOOLKIT_LOG("config", String("loaded revision=") + config.revision);
+  return true;
 }
 
 bool ConfigStore::save(const DeviceConfig& config, String& error) {
-  if (!validateConfig(config, error)) return false;
+  if (!validateConfig(config, error)) {
+    TOOLKIT_LOG("config", String("save validation failed: ") + error);
+    return false;
+  }
 
   JsonDocument document;
-  configToJson(config, document.to<JsonObject>(), false);
+  configToJson(config, document.to<JsonObject>());
   String payload;
   serializeJson(document, payload);
   if (payload.length() > kMaxPayloadBytes) {
     error = "serialized config is too large";
+    TOOLKIT_LOG("config", error);
     return false;
   }
 
   Preferences preferences;
-  if (!preferences.begin("epd_cfg", false)) {
+  if (!preferences.begin("epd_cfg3", false)) {
     error = "cannot open NVS namespace";
+    TOOLKIT_LOG("config", error);
     return false;
   }
   const SlotData a = readSlot(preferences, "slot_a");
@@ -104,6 +125,7 @@ bool ConfigStore::save(const DeviceConfig& config, String& error) {
   if (preferences.putBytes(next_key, bytes.data(), bytes.size()) != bytes.size()) {
     preferences.end();
     error = "cannot write NVS config slot";
+    TOOLKIT_LOG("config", error);
     return false;
   }
   const SlotData verify = readSlot(preferences, next_key);
@@ -111,21 +133,30 @@ bool ConfigStore::save(const DeviceConfig& config, String& error) {
       preferences.putUChar("active", next_active) != 1) {
     preferences.end();
     error = "NVS config verification failed";
+    TOOLKIT_LOG("config", error);
     return false;
   }
   preferences.end();
+  TOOLKIT_LOG("config", String("saved revision=") + config.revision +
+                            " sequence=" + sequence);
   return true;
 }
 
 bool ConfigStore::erase(String& error) {
   Preferences preferences;
-  if (!preferences.begin("epd_cfg", false)) {
+  if (!preferences.begin("epd_cfg3", false)) {
     error = "cannot open NVS namespace";
+    TOOLKIT_LOG("config", error);
     return false;
   }
   const bool ok = preferences.clear();
   preferences.end();
-  if (!ok) error = "cannot erase NVS config";
+  if (!ok) {
+    error = "cannot erase NVS config";
+    TOOLKIT_LOG("config", error);
+  } else {
+    TOOLKIT_LOG("config", "NVS namespace erased");
+  }
   return ok;
 }
 

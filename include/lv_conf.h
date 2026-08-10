@@ -14,6 +14,8 @@
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_16 1
 #define LV_FONT_MONTSERRAT_20 1
+#define LV_FONT_MONTSERRAT_28 1
+#define LV_FONT_MONTSERRAT_36 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
 
 #define LV_DRAW_SW_I1_LUM_THRESHOLD 128
@@ -24,4 +26,3 @@
 #define LV_USE_GRADIENT 0
 
 #endif
-

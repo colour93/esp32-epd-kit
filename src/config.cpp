@@ -1,52 +1,58 @@
 #include "toolkit/config.h"
 
-#include <algorithm>
-
-#include "toolkit/core_logic.h"
-
 namespace epd {
 namespace {
 
-template <typename T>
-bool readNumber(JsonVariantConst value, T& destination, const char* path,
-                String& error) {
-  if (value.isNull()) return true;
-  if (!value.is<T>()) {
-    error = String(path) + " must be an unsigned integer";
-    return false;
-  }
-  destination = value.as<T>();
-  return true;
-}
-
-bool readString(JsonVariantConst value, String& destination, const char* path,
+bool readString(JsonVariantConst value, String& out, const char* path,
                 String& error) {
   if (value.isNull()) return true;
   if (!value.is<const char*>()) {
     error = String(path) + " must be a string";
     return false;
   }
-  destination = value.as<const char*>();
+  out = value.as<const char*>();
   return true;
 }
 
-bool requireObjectOrNull(JsonVariantConst value, const char* path,
-                         String& error) {
+template <typename T>
+bool readUnsigned(JsonVariantConst value, T& out, const char* path,
+                  String& error) {
+  if (value.isNull()) return true;
+  if (!value.is<T>()) {
+    error = String(path) + " must be an unsigned integer";
+    return false;
+  }
+  out = value.as<T>();
+  return true;
+}
+
+bool readBool(JsonVariantConst value, bool& out, const char* path,
+              String& error) {
+  if (value.isNull()) return true;
+  if (!value.is<bool>()) {
+    error = String(path) + " must be a boolean";
+    return false;
+  }
+  out = value.as<bool>();
+  return true;
+}
+
+bool requireObject(JsonVariantConst value, const char* path, String& error) {
   if (value.isNull() || value.is<JsonObjectConst>()) return true;
   error = String(path) + " must be an object";
   return false;
 }
 
-bool hasControlCharacters(const String& value) {
-  for (size_t index = 0; index < value.length(); ++index) {
-    const uint8_t byte = static_cast<uint8_t>(value[index]);
+bool hasControl(const String& value) {
+  for (size_t i = 0; i < value.length(); ++i) {
+    const uint8_t byte = static_cast<uint8_t>(value[i]);
     if (byte < 0x20U || byte == 0x7FU) return true;
   }
   return false;
 }
 
-std::string_view asView(const String& value) {
-  return {value.c_str(), value.length()};
+bool boundedIdentifier(const String& value, size_t maximum) {
+  return !value.isEmpty() && value.length() <= maximum && !hasControl(value);
 }
 
 }  // namespace
@@ -56,117 +62,62 @@ bool validateConfig(const DeviceConfig& config, String& error) {
     error = "unsupported config version";
     return false;
   }
-  if (config.device.name.isEmpty() || config.device.name.length() > 24 ||
-      hasControlCharacters(config.device.name)) {
-    error = "device.name must contain 1-24 printable bytes";
+  if (!boundedIdentifier(config.device.name, 24) ||
+      !boundedIdentifier(config.device.locale, 16) ||
+      !boundedIdentifier(config.device.timezone_iana, 64)) {
+    error = "invalid device name, locale, or timezone";
     return false;
   }
-  if (config.device.locale.length() > 16 || config.device.timezone_iana.length() > 64 ||
-      config.device.timezone_posix.isEmpty() || config.device.timezone_posix.length() > 96) {
-    error = "invalid locale or timezone";
+  const BatterySettings& battery = config.hardware.battery;
+  if (!(battery.critical_mv >= 3000 &&
+        battery.critical_mv < battery.low_mv &&
+        battery.low_mv < battery.recovery_mv && battery.recovery_mv <= 4300)) {
+    error = "battery thresholds must be ordered between 3000 and 4300 mV";
     return false;
   }
-  if (config.wifi.ssid.length() > 32 || config.wifi.password.length() > 64) {
-    error = "Wi-Fi credentials exceed ESP32 limits";
+  if (config.power.wake_interval_sec < 60 ||
+      config.power.wake_interval_sec > 86400) {
+    error = "power wake interval must be between 60 and 86400 seconds";
     return false;
-  }
-  if (config.wifi.ipv4.mode == WifiIpv4Mode::kStatic) {
-    if (!core::isValidStaticIpv4(
-            asView(config.wifi.ipv4.address),
-            asView(config.wifi.ipv4.gateway),
-            asView(config.wifi.ipv4.subnet), asView(config.wifi.ipv4.dns1),
-            asView(config.wifi.ipv4.dns2))) {
-      error = "invalid static IPv4 host, gateway, subnet, or DNS";
-      return false;
-    }
-  }
-  if (config.power.poll_interval_sec < 60 || config.power.poll_interval_sec > 86400 ||
-      config.power.ble_window_sec < 30 || config.power.ble_window_sec > 600) {
-    error = "power interval outside supported range";
-    return false;
-  }
-  for (uint32_t delay : config.power.offline_backoff_sec) {
-    if (delay < 60 || delay > 86400) {
-      error = "offline backoff outside supported range";
-      return false;
-    }
   }
   if (config.display.full_after_partial_count < 1 ||
       config.display.full_after_partial_count > 100 ||
+      config.display.full_max_age_sec < 3600 ||
       config.display.full_area_threshold_percent < 10 ||
-      config.display.full_area_threshold_percent > 100 ||
-      config.display.full_max_age_sec < 3600) {
+      config.display.full_area_threshold_percent > 100) {
     error = "invalid display refresh policy";
     return false;
   }
-  if (!(config.battery.critical_mv < config.battery.low_mv &&
-        config.battery.low_mv < config.battery.recovery_mv &&
-        config.battery.critical_mv >= 3000 && config.battery.recovery_mv <= 4300)) {
-    error = "battery thresholds must be ordered and safe";
-    return false;
-  }
-  if (config.active_app != "codex_usage") {
-    error = "unknown active_app";
-    return false;
-  }
-  if (config.codex.account_id.length() > 128 || config.codex.access_token.length() > 4096) {
-    error = "Codex credential exceeds protocol limits";
-    return false;
-  }
-  if ((!config.codex.proxy.host.isEmpty() &&
-       !core::isValidHttpProxyHost(asView(config.codex.proxy.host))) ||
-      config.codex.proxy.username.length() > 128 ||
-      config.codex.proxy.password.length() > 256 ||
-      config.codex.proxy.username.indexOf(':') >= 0 ||
-      hasControlCharacters(config.codex.proxy.username) ||
-      hasControlCharacters(config.codex.proxy.password)) {
-    error = "invalid HTTP proxy credentials";
-    return false;
-  }
-  if (config.codex.proxy.port == 0) {
-    error = "HTTP proxy port must be between 1 and 65535";
-    return false;
-  }
-  if (config.codex.proxy.enabled &&
-      (config.codex.proxy.host.isEmpty() ||
-       (config.codex.proxy.username.isEmpty() &&
-        !config.codex.proxy.password.isEmpty()))) {
-    error = "enabled HTTP proxy requires host, port, and valid credentials";
+  if (!boundedIdentifier(config.view.renderer_id, 64) ||
+      !boundedIdentifier(config.view.resource_key, 64)) {
+    error = "invalid renderer id or resource key";
     return false;
   }
   return true;
 }
 
-void configToJson(const DeviceConfig& config, JsonObject out, bool redact_secrets) {
+void configToJson(const DeviceConfig& config, JsonObject out) {
   out["version"] = config.version;
+  out["revision"] = config.revision;
   JsonObject device = out["device"].to<JsonObject>();
   device["name"] = config.device.name;
   device["locale"] = config.device.locale;
-  JsonObject timezone = device["timezone"].to<JsonObject>();
-  timezone["iana"] = config.device.timezone_iana;
-  timezone["posix"] = config.device.timezone_posix;
+  device["timezone_iana"] = config.device.timezone_iana;
 
-  JsonObject wifi = out["wifi"].to<JsonObject>();
-  wifi["ssid"] = config.wifi.ssid;
-  if (redact_secrets) {
-    wifi["password_set"] = !config.wifi.password.isEmpty();
-  } else {
-    wifi["password"] = config.wifi.password;
-  }
-  JsonObject ipv4 = wifi["ipv4"].to<JsonObject>();
-  ipv4["mode"] = config.wifi.ipv4.mode == WifiIpv4Mode::kStatic ? "static"
-                                                                      : "dhcp";
-  ipv4["address"] = config.wifi.ipv4.address;
-  ipv4["gateway"] = config.wifi.ipv4.gateway;
-  ipv4["subnet"] = config.wifi.ipv4.subnet;
-  ipv4["dns1"] = config.wifi.ipv4.dns1;
-  ipv4["dns2"] = config.wifi.ipv4.dns2;
+  JsonObject hardware = out["hardware"].to<JsonObject>();
+  JsonObject battery = hardware["battery"].to<JsonObject>();
+  battery["enabled"] = config.hardware.battery.enabled;
+  battery["low_mv"] = config.hardware.battery.low_mv;
+  battery["critical_mv"] = config.hardware.battery.critical_mv;
+  battery["recovery_mv"] = config.hardware.battery.recovery_mv;
+  JsonObject io12 = hardware["io12"].to<JsonObject>();
+  io12["mode"] = config.hardware.io12_mode == Io12Mode::kKey ? "key" : "disabled";
 
   JsonObject power = out["power"].to<JsonObject>();
-  power["poll_interval_sec"] = config.power.poll_interval_sec;
-  power["ble_window_sec"] = config.power.ble_window_sec;
-  JsonArray backoff = power["offline_backoff_sec"].to<JsonArray>();
-  for (uint32_t delay : config.power.offline_backoff_sec) backoff.add(delay);
+  power["profile"] = config.power.profile == PowerProfile::kBattery
+                           ? "battery"
+                           : "mains";
+  power["wake_interval_sec"] = config.power.wake_interval_sec;
 
   JsonObject display = out["display"].to<JsonObject>();
   display["full_after_partial_count"] = config.display.full_after_partial_count;
@@ -174,217 +125,141 @@ void configToJson(const DeviceConfig& config, JsonObject out, bool redact_secret
   display["full_area_threshold_percent"] =
       config.display.full_area_threshold_percent;
 
-  JsonObject battery = out["battery"].to<JsonObject>();
-  battery["low_mv"] = config.battery.low_mv;
-  battery["critical_mv"] = config.battery.critical_mv;
-  battery["recovery_mv"] = config.battery.recovery_mv;
-
-  out["active_app"] = config.active_app;
-  JsonObject apps = out["apps"].to<JsonObject>();
-  JsonObject codex = apps["codex_usage"].to<JsonObject>();
-  codex["account_id"] = config.codex.account_id;
-  codex["expires_at"] = config.codex.expires_at;
-  if (redact_secrets) {
-    codex["access_token_set"] = !config.codex.access_token.isEmpty();
-  } else {
-    codex["access_token"] = config.codex.access_token;
-  }
-  JsonObject proxy = codex["proxy"].to<JsonObject>();
-  proxy["enabled"] = config.codex.proxy.enabled;
-  proxy["host"] = config.codex.proxy.host;
-  proxy["port"] = config.codex.proxy.port;
-  proxy["username"] = config.codex.proxy.username;
-  if (redact_secrets) {
-    proxy["password_set"] = !config.codex.proxy.password.isEmpty();
-  } else {
-    proxy["password"] = config.codex.proxy.password;
-  }
+  JsonObject view = out["view"].to<JsonObject>();
+  view["renderer_id"] = config.view.renderer_id;
+  view["resource_key"] = config.view.resource_key;
 }
 
-bool applyConfigPatch(JsonVariantConst source, DeviceConfig& config, String& error) {
+bool applyConfigPatch(JsonVariantConst source, DeviceConfig& config,
+                      String& error) {
   if (!source.is<JsonObjectConst>()) {
     error = "patch must be an object";
     return false;
   }
-
-  if (!readNumber(source["version"], config.version, "version", error)) {
+  if (!readUnsigned(source["version"], config.version, "version", error)) {
     return false;
   }
   JsonVariantConst device = source["device"];
-  if (!requireObjectOrNull(device, "device", error)) return false;
-  if (device.is<JsonObjectConst>()) {
-    if (!readString(device["name"], config.device.name, "device.name", error) ||
-        !readString(device["locale"], config.device.locale, "device.locale",
-                    error)) {
-      return false;
-    }
-    JsonVariantConst timezone = device["timezone"];
-    if (!requireObjectOrNull(timezone, "device.timezone", error)) return false;
-    if (timezone.is<JsonObjectConst>()) {
-      if (!readString(timezone["iana"], config.device.timezone_iana,
-                      "device.timezone.iana", error) ||
-          !readString(timezone["posix"], config.device.timezone_posix,
-                      "device.timezone.posix", error)) {
-        return false;
-      }
-    }
+  if (!requireObject(device, "device", error)) return false;
+  if (device.is<JsonObjectConst>() &&
+      (!readString(device["name"], config.device.name, "device.name", error) ||
+       !readString(device["locale"], config.device.locale, "device.locale", error) ||
+       !readString(device["timezone_iana"], config.device.timezone_iana,
+                   "device.timezone_iana", error))) {
+    return false;
   }
 
-  JsonVariantConst wifi = source["wifi"];
-  if (!requireObjectOrNull(wifi, "wifi", error)) return false;
-  if (wifi.is<JsonObjectConst>()) {
-    if (!readString(wifi["ssid"], config.wifi.ssid, "wifi.ssid", error) ||
-        !readString(wifi["password"], config.wifi.password, "wifi.password",
-                    error)) {
+  JsonVariantConst hardware = source["hardware"];
+  if (!requireObject(hardware, "hardware", error)) return false;
+  if (hardware.is<JsonObjectConst>()) {
+    JsonVariantConst battery = hardware["battery"];
+    if (!requireObject(battery, "hardware.battery", error)) return false;
+    if (battery.is<JsonObjectConst>() &&
+        (!readBool(battery["enabled"], config.hardware.battery.enabled,
+                   "hardware.battery.enabled", error) ||
+         !readUnsigned(battery["low_mv"], config.hardware.battery.low_mv,
+                       "hardware.battery.low_mv", error) ||
+         !readUnsigned(battery["critical_mv"],
+                       config.hardware.battery.critical_mv,
+                       "hardware.battery.critical_mv", error) ||
+         !readUnsigned(battery["recovery_mv"],
+                       config.hardware.battery.recovery_mv,
+                       "hardware.battery.recovery_mv", error))) {
       return false;
     }
-    JsonVariantConst ipv4 = wifi["ipv4"];
-    if (!requireObjectOrNull(ipv4, "wifi.ipv4", error)) return false;
-    if (ipv4.is<JsonObjectConst>()) {
-      JsonVariantConst mode = ipv4["mode"];
-      if (!mode.isNull()) {
-        if (!mode.is<const char*>()) {
-          error = "wifi.ipv4.mode must be a string";
-          return false;
-        }
-        const String mode_name = mode.as<const char*>();
-        if (mode_name == "dhcp") {
-          config.wifi.ipv4.mode = WifiIpv4Mode::kDhcp;
-        } else if (mode_name == "static") {
-          config.wifi.ipv4.mode = WifiIpv4Mode::kStatic;
-        } else {
-          error = "wifi.ipv4.mode must be dhcp or static";
-          return false;
-        }
+    JsonVariantConst io12 = hardware["io12"];
+    if (!requireObject(io12, "hardware.io12", error)) return false;
+    if (io12.is<JsonObjectConst>() && !io12["mode"].isNull()) {
+      if (!io12["mode"].is<const char*>()) {
+        error = "hardware.io12.mode must be a string";
+        return false;
       }
-      if (!readString(ipv4["address"], config.wifi.ipv4.address,
-                      "wifi.ipv4.address", error) ||
-          !readString(ipv4["gateway"], config.wifi.ipv4.gateway,
-                      "wifi.ipv4.gateway", error) ||
-          !readString(ipv4["subnet"], config.wifi.ipv4.subnet,
-                      "wifi.ipv4.subnet", error) ||
-          !readString(ipv4["dns1"], config.wifi.ipv4.dns1,
-                      "wifi.ipv4.dns1", error) ||
-          !readString(ipv4["dns2"], config.wifi.ipv4.dns2,
-                      "wifi.ipv4.dns2", error)) {
+      const String mode = io12["mode"].as<const char*>();
+      if (mode == "disabled") {
+        config.hardware.io12_mode = Io12Mode::kDisabled;
+      } else if (mode == "key") {
+        config.hardware.io12_mode = Io12Mode::kKey;
+      } else {
+        error = "hardware.io12.mode must be disabled or key";
         return false;
       }
     }
   }
 
   JsonVariantConst power = source["power"];
-  if (!requireObjectOrNull(power, "power", error)) return false;
+  if (!requireObject(power, "power", error)) return false;
   if (power.is<JsonObjectConst>()) {
-    if (!readNumber(power["poll_interval_sec"],
-                    config.power.poll_interval_sec,
-                    "power.poll_interval_sec", error) ||
-        !readNumber(power["ble_window_sec"], config.power.ble_window_sec,
-                    "power.ble_window_sec", error)) {
-      return false;
+    if (!power["profile"].isNull()) {
+      if (!power["profile"].is<const char*>()) {
+        error = "power.profile must be a string";
+        return false;
+      }
+      const String profile = power["profile"].as<const char*>();
+      if (profile == "mains") {
+        config.power.profile = PowerProfile::kMains;
+      } else if (profile == "battery") {
+        config.power.profile = PowerProfile::kBattery;
+      } else {
+        error = "power.profile must be mains or battery";
+        return false;
+      }
     }
-    JsonVariantConst backoff_value = power["offline_backoff_sec"];
-    if (!backoff_value.isNull()) {
-      if (!backoff_value.is<JsonArrayConst>()) {
-        error = "power.offline_backoff_sec must be an array";
-        return false;
-      }
-      JsonArrayConst backoff = backoff_value.as<JsonArrayConst>();
-      if (backoff.size() != 4) {
-        error = "offline_backoff_sec must contain four values";
-        return false;
-      }
-      for (size_t i = 0; i < 4; ++i) {
-        if (!backoff[i].is<uint32_t>()) {
-          error = "power.offline_backoff_sec values must be unsigned integers";
-          return false;
-        }
-        config.power.offline_backoff_sec[i] = backoff[i].as<uint32_t>();
-      }
+    if (!readUnsigned(power["wake_interval_sec"],
+                      config.power.wake_interval_sec,
+                      "power.wake_interval_sec", error)) {
+      return false;
     }
   }
 
   JsonVariantConst display = source["display"];
-  if (!requireObjectOrNull(display, "display", error)) return false;
-  if (display.is<JsonObjectConst>()) {
-    if (!readNumber(display["full_after_partial_count"],
-                    config.display.full_after_partial_count,
-                    "display.full_after_partial_count", error) ||
-        !readNumber(display["full_max_age_sec"],
-                    config.display.full_max_age_sec,
-                    "display.full_max_age_sec", error) ||
-        !readNumber(display["full_area_threshold_percent"],
-                    config.display.full_area_threshold_percent,
-                    "display.full_area_threshold_percent", error)) {
-      return false;
-    }
-  }
-
-  JsonVariantConst battery = source["battery"];
-  if (!requireObjectOrNull(battery, "battery", error)) return false;
-  if (battery.is<JsonObjectConst>()) {
-    if (!readNumber(battery["low_mv"], config.battery.low_mv,
-                    "battery.low_mv", error) ||
-        !readNumber(battery["critical_mv"], config.battery.critical_mv,
-                    "battery.critical_mv", error) ||
-        !readNumber(battery["recovery_mv"], config.battery.recovery_mv,
-                    "battery.recovery_mv", error)) {
-      return false;
-    }
-  }
-
-  if (!readString(source["active_app"], config.active_app, "active_app",
-                  error)) {
+  if (!requireObject(display, "display", error)) return false;
+  if (display.is<JsonObjectConst>() &&
+      (!readUnsigned(display["full_after_partial_count"],
+                     config.display.full_after_partial_count,
+                     "display.full_after_partial_count", error) ||
+       !readUnsigned(display["full_max_age_sec"],
+                     config.display.full_max_age_sec,
+                     "display.full_max_age_sec", error) ||
+       !readUnsigned(display["full_area_threshold_percent"],
+                     config.display.full_area_threshold_percent,
+                     "display.full_area_threshold_percent", error))) {
     return false;
   }
-  JsonVariantConst apps = source["apps"];
-  if (!requireObjectOrNull(apps, "apps", error)) return false;
-  if (apps.is<JsonObjectConst>()) {
-    JsonVariantConst codex = apps["codex_usage"];
-    if (!requireObjectOrNull(codex, "apps.codex_usage", error)) return false;
-    if (codex.is<JsonObjectConst>()) {
-      if (!readString(codex["account_id"], config.codex.account_id,
-                      "apps.codex_usage.account_id", error) ||
-          !readString(codex["access_token"], config.codex.access_token,
-                      "apps.codex_usage.access_token", error) ||
-          !readNumber(codex["expires_at"], config.codex.expires_at,
-                      "apps.codex_usage.expires_at", error)) {
-        return false;
-      }
-      JsonVariantConst proxy = codex["proxy"];
-      if (!requireObjectOrNull(proxy, "apps.codex_usage.proxy", error)) {
-        return false;
-      }
-      if (proxy.is<JsonObjectConst>()) {
-        JsonVariantConst enabled = proxy["enabled"];
-        if (!enabled.isNull()) {
-          if (!enabled.is<bool>()) {
-            error = "apps.codex_usage.proxy.enabled must be a boolean";
-            return false;
-          }
-          config.codex.proxy.enabled = enabled.as<bool>();
-        }
-        if (!readString(proxy["host"], config.codex.proxy.host,
-                        "apps.codex_usage.proxy.host", error) ||
-            !readNumber(proxy["port"], config.codex.proxy.port,
-                        "apps.codex_usage.proxy.port", error) ||
-            !readString(proxy["username"], config.codex.proxy.username,
-                        "apps.codex_usage.proxy.username", error) ||
-            !readString(proxy["password"], config.codex.proxy.password,
-                        "apps.codex_usage.proxy.password", error)) {
-          return false;
-        }
-      }
-    }
-  }
 
+  JsonVariantConst view = source["view"];
+  if (!requireObject(view, "view", error)) return false;
+  if (view.is<JsonObjectConst>() &&
+      (!readString(view["renderer_id"], config.view.renderer_id,
+                   "view.renderer_id", error) ||
+       !readString(view["resource_key"], config.view.resource_key,
+                   "view.resource_key", error))) {
+    return false;
+  }
   return validateConfig(config, error);
 }
 
-bool configFromJson(JsonVariantConst source, DeviceConfig& config, String& error) {
+bool configFromJson(JsonVariantConst source, DeviceConfig& config,
+                    String& error) {
+  if (!source.is<JsonObjectConst>()) {
+    error = "config must be an object";
+    return false;
+  }
   DeviceConfig parsed;
+  if (!source["revision"].isNull() && !source["revision"].is<uint32_t>()) {
+    error = "revision must be an unsigned integer";
+    return false;
+  }
+  parsed.revision = source["revision"] | 0U;
   if (!applyConfigPatch(source, parsed, error)) return false;
   config = parsed;
   return true;
+}
+
+bool configRequiresRestart(const DeviceConfig& before,
+                           const DeviceConfig& after) {
+  return before.hardware.battery.enabled != after.hardware.battery.enabled ||
+         before.hardware.io12_mode != after.hardware.io12_mode ||
+         before.power.profile != after.power.profile;
 }
 
 }  // namespace epd

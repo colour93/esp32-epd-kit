@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <cstring>
 
+#include "toolkit/ui_fonts.h"
+#include "toolkit/log.h"
+
 namespace epd {
 namespace {
 
@@ -21,6 +24,41 @@ struct RtcDisplayState {
 };
 
 RTC_DATA_ATTR RtcDisplayState g_rtc_display_state{};
+
+void styleScreen(lv_obj_t* root) {
+  lv_obj_set_style_bg_color(root, lv_color_white(), 0);
+  lv_obj_set_style_border_width(root, 0, 0);
+  lv_obj_set_style_pad_all(root, 0, 0);
+
+  lv_obj_t* accent = lv_obj_create(root);
+  lv_obj_set_pos(accent, 0, 0);
+  lv_obj_set_size(accent, 8, hardware::kLogicalHeight);
+  lv_obj_set_style_bg_color(accent, lv_color_black(), 0);
+  lv_obj_set_style_border_width(accent, 0, 0);
+  lv_obj_set_style_pad_all(accent, 0, 0);
+}
+
+void addRule(lv_obj_t* root, int16_t y) {
+  lv_obj_t* rule = lv_obj_create(root);
+  lv_obj_set_pos(rule, 18, y);
+  lv_obj_set_size(rule, 224, 1);
+  lv_obj_set_style_bg_color(rule, lv_color_black(), 0);
+  lv_obj_set_style_border_width(rule, 0, 0);
+  lv_obj_set_style_pad_all(rule, 0, 0);
+}
+
+void addConnectionIndicator(lv_obj_t* root, bool connected) {
+  lv_obj_t* indicator = lv_obj_create(root);
+  lv_obj_set_size(indicator, 7, 7);
+  lv_obj_align(indicator, LV_ALIGN_TOP_RIGHT, -8, 9);
+  lv_obj_set_style_radius(indicator, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_color(indicator, lv_color_black(), 0);
+  lv_obj_set_style_border_width(indicator, 1, 0);
+  lv_obj_set_style_bg_color(indicator, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(indicator, connected ? LV_OPA_COVER : LV_OPA_TRANSP,
+                          0);
+  lv_obj_set_style_pad_all(indicator, 0, 0);
+}
 
 }  // namespace
 
@@ -47,6 +85,14 @@ bool DisplayManager::oldFrameValid() const {
          g_rtc_display_state.ui_version == hardware::kDisplayUiVersion &&
          g_rtc_display_state.frame_crc ==
              frameCrc(g_rtc_display_state.frame, sizeof(g_rtc_display_state.frame));
+}
+
+bool DisplayManager::lowBatteryLatched() const {
+  return g_rtc_display_state.low_battery_latched;
+}
+
+void DisplayManager::setLowBatteryLatched(bool latched) {
+  g_rtc_display_state.low_battery_latched = latched;
 }
 
 bool DisplayManager::logicalPixel(const uint8_t* frame, uint16_t x, uint16_t y) {
@@ -94,6 +140,8 @@ void DisplayManager::begin() {
   lv_display_set_flush_cb(lv_display_, flushCallback);
   lv_display_set_buffers(lv_display_, draw_buffer_, nullptr, sizeof(draw_buffer_),
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
+  TOOLKIT_LOG("display", String("LVGL ready ") + hardware::kLogicalWidth + "x" +
+                             hardware::kLogicalHeight);
 }
 
 lv_obj_t* DisplayManager::addText(lv_obj_t* parent, const char* text, int16_t x,
@@ -106,57 +154,67 @@ lv_obj_t* DisplayManager::addText(lv_obj_t* parent, const char* text, int16_t x,
   return label;
 }
 
-void DisplayManager::renderApp(IApp& app) {
+void DisplayManager::renderView(IRenderer& renderer,
+                                const ResourceRecord* resource,
+                                const RenderContext& context) {
+  TOOLKIT_LOG("display", String("render renderer=") + renderer.id() +
+                             " resource=" +
+                             (resource == nullptr ? "missing" : resource->key));
   lv_obj_t* root = lv_screen_active();
   lv_obj_clean(root);
-  app.buildUi(root, app.state());
+  renderer.buildUi(root, resource, context);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
 }
 
-void DisplayManager::renderPairing(uint32_t passkey, bool configured) {
+void DisplayManager::renderPairing(uint32_t passkey, bool configured,
+                                   bool connected) {
   lv_obj_t* root = lv_screen_active();
   lv_obj_clean(root);
-  lv_obj_set_style_bg_color(root, lv_color_white(), 0);
-  addText(root, configured ? "CONFIG MODE" : "FIRST SETUP", 5, 4,
-          &lv_font_montserrat_20);
-  addText(root, "BLE passkey", 5, 35, &lv_font_montserrat_14);
+  styleScreen(root);
+  addText(root, configured ? "配置模式" : "初次设置", 18, 6,
+          &ui_font_zh_16);
+  lv_obj_t* ble = addText(root, "BLE", 0, 8, &lv_font_montserrat_12);
+  lv_obj_align(ble, LV_ALIGN_TOP_RIGHT, -22, 8);
+  addConnectionIndicator(root, connected);
+  addRule(root, 31);
+  addText(root, "蓝牙配对码", 18, 38, &ui_font_zh_14);
   char value[12];
   snprintf(value, sizeof(value), "%06lu", static_cast<unsigned long>(passkey));
-  lv_obj_t* key = addText(root, value, 5, 54, &lv_font_montserrat_20);
-  lv_obj_set_style_text_letter_space(key, 5, 0);
-  addText(root, "Subscribe TX, then send hello", 5, 91,
-          &lv_font_montserrat_12);
-  addText(root, configured ? "Physical key opened this session"
-                           : "Pair using the passkey above",
-          5, 106, &lv_font_montserrat_12);
+  lv_obj_t* key = addText(root, value, 18, 52, &lv_font_montserrat_36);
+  lv_obj_set_style_text_letter_space(key, 4, 0);
+  addText(root, "请在电脑端输入上方号码", 18, 101, &ui_font_zh_14);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
 }
 
-void DisplayManager::renderLowBattery(uint16_t millivolts) {
+void DisplayManager::renderLowBattery(uint16_t millivolts, bool connected) {
   lv_obj_t* root = lv_screen_active();
   lv_obj_clean(root);
-  lv_obj_set_style_bg_color(root, lv_color_white(), 0);
-  addText(root, "LOW BATTERY", 5, 9, &lv_font_montserrat_20);
-  char value[32];
-  snprintf(value, sizeof(value), "%.2fV - radio disabled", millivolts / 1000.0F);
-  addText(root, value, 5, 49, &lv_font_montserrat_16);
-  addText(root, "Charge battery to resume updates", 5, 85,
-          &lv_font_montserrat_12);
+  styleScreen(root);
+  addText(root, "电量过低", 18, 9, &ui_font_zh_16);
+  addConnectionIndicator(root, connected);
+  char value[16];
+  snprintf(value, sizeof(value), "%.2fV", millivolts / 1000.0F);
+  addText(root, value, 18, 39, &lv_font_montserrat_36);
+  addText(root, "无线连接已暂停 充电后自动恢复", 18, 96,
+          &ui_font_zh_14);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
 }
 
-void DisplayManager::renderFactoryResetConfirmation() {
+void DisplayManager::renderFactoryResetConfirmation(uint32_t code,
+                                                     bool connected) {
   lv_obj_t* root = lv_screen_active();
   lv_obj_clean(root);
-  lv_obj_set_style_bg_color(root, lv_color_white(), 0);
-  addText(root, "FACTORY RESET?", 5, 10, &lv_font_montserrat_20);
-  addText(root, "BLE prepare: hold KEY for 2 sec", 5, 52,
-          &lv_font_montserrat_14);
-  addText(root, "Then commit nonce within 30 sec", 5, 80,
-          &lv_font_montserrat_14);
+  styleScreen(root);
+  addText(root, "恢复出厂设置?", 18, 10, &ui_font_zh_16);
+  addConnectionIndicator(root, connected);
+  addRule(root, 37);
+  char value[12];
+  snprintf(value, sizeof(value), "%06lu", static_cast<unsigned long>(code));
+  addText(root, value, 18, 43, &lv_font_montserrat_36);
+  addText(root, "在受信主机输入确认码", 18, 94, &ui_font_zh_14);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
 }
@@ -209,7 +267,15 @@ PresentResult DisplayManager::present(const DisplaySettings& settings,
                                       g_rtc_display_state.partial_count,
                                       settings.full_after_partial_count, full_age,
                                       settings.full_max_age_sec);
-  if (dirty.empty() && !full) return PresentResult::kNoChange;
+  if (dirty.empty() && !full) {
+    TOOLKIT_LOG("display", "frame unchanged");
+    return PresentResult::kNoChange;
+  }
+  TOOLKIT_LOG("display", String("present mode=") + (full ? "full" : "partial") +
+                             " dirty=" + dirty.x + "," + dirty.y + "," +
+                             dirty.width + "x" + dirty.height +
+                             " partial_count=" +
+                             g_rtc_display_state.partial_count);
 
   logicalToNative(frame_, native_new_);
   if (old_valid) logicalToNative(g_rtc_display_state.frame, native_old_);
@@ -255,6 +321,8 @@ PresentResult DisplayManager::present(const DisplaySettings& settings,
   } else {
     ++g_rtc_display_state.partial_count;
   }
+  TOOLKIT_LOG("display", String("present complete mode=") +
+                             (full ? "full" : "partial"));
   return full ? PresentResult::kFull : PresentResult::kPartial;
 }
 

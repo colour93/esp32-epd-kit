@@ -18,12 +18,15 @@ class DisplayManager {
   DisplayManager();
 
   void begin();
-  void renderApp(IApp& app);
-  void renderPairing(uint32_t passkey, bool configured);
-  void renderLowBattery(uint16_t millivolts);
-  void renderFactoryResetConfirmation();
+  void renderView(IRenderer& renderer, const ResourceRecord* resource,
+                  const RenderContext& context);
+  void renderPairing(uint32_t passkey, bool configured, bool connected = false);
+  void renderLowBattery(uint16_t millivolts, bool connected = false);
+  void renderFactoryResetConfirmation(uint32_t code, bool connected = true);
   PresentResult present(const DisplaySettings& settings, bool force_full = false);
   bool oldFrameValid() const;
+  bool lowBatteryLatched() const;
+  void setLowBatteryLatched(bool latched);
 
  private:
   static constexpr uint16_t kDrawLines = 16;
@@ -52,4 +55,3 @@ class DisplayManager {
 };
 
 }  // namespace epd
-

@@ -5,36 +5,32 @@
 
 namespace epd {
 
-constexpr uint16_t kConfigSchemaVersion = 1;
+constexpr uint16_t kConfigSchemaVersion = 3;
+
+enum class PowerProfile : uint8_t { kMains, kBattery };
+enum class Io12Mode : uint8_t { kDisabled, kKey };
 
 struct DeviceSettings {
   String name = "epd-kit";
   String locale = "zh-CN";
   String timezone_iana = "Asia/Shanghai";
-  String timezone_posix = "CST-8";
 };
 
-enum class WifiIpv4Mode : uint8_t { kDhcp, kStatic };
-
-struct WifiIpv4Settings {
-  WifiIpv4Mode mode = WifiIpv4Mode::kDhcp;
-  String address;
-  String gateway;
-  String subnet;
-  String dns1;
-  String dns2;
+struct BatterySettings {
+  bool enabled = false;
+  uint16_t low_mv = 3550;
+  uint16_t critical_mv = 3400;
+  uint16_t recovery_mv = 3650;
 };
 
-struct WifiSettings {
-  String ssid;
-  String password;
-  WifiIpv4Settings ipv4;
+struct HardwareSettings {
+  BatterySettings battery;
+  Io12Mode io12_mode = Io12Mode::kDisabled;
 };
 
 struct PowerSettings {
-  uint32_t poll_interval_sec = 300;
-  uint32_t ble_window_sec = 180;
-  uint32_t offline_backoff_sec[4] = {300, 900, 1800, 3600};
+  PowerProfile profile = PowerProfile::kMains;
+  uint32_t wake_interval_sec = 300;
 };
 
 struct DisplaySettings {
@@ -43,46 +39,25 @@ struct DisplaySettings {
   uint8_t full_area_threshold_percent = 40;
 };
 
-struct BatterySettings {
-  uint16_t low_mv = 3550;
-  uint16_t critical_mv = 3400;
-  uint16_t recovery_mv = 3650;
-};
-
-struct HttpProxySettings {
-  bool enabled = false;
-  String host;
-  uint16_t port = 8080;
-  String username;
-  String password;
-};
-
-struct CodexSettings {
-  String account_id;
-  String access_token;
-  uint64_t expires_at = 0;
-  HttpProxySettings proxy;
+struct ViewSettings {
+  String renderer_id = "codex.rate_limits";
+  String resource_key = "codex/default";
 };
 
 struct DeviceConfig {
   uint16_t version = kConfigSchemaVersion;
+  uint32_t revision = 0;
   DeviceSettings device;
-  WifiSettings wifi;
+  HardwareSettings hardware;
   PowerSettings power;
   DisplaySettings display;
-  BatterySettings battery;
-  String active_app = "codex_usage";
-  CodexSettings codex;
-
-  bool isConfigured() const {
-    return !wifi.ssid.isEmpty() && !codex.account_id.isEmpty() &&
-           !codex.access_token.isEmpty() && active_app == "codex_usage";
-  }
+  ViewSettings view;
 };
 
 bool validateConfig(const DeviceConfig& config, String& error);
-void configToJson(const DeviceConfig& config, JsonObject out, bool redact_secrets);
+void configToJson(const DeviceConfig& config, JsonObject out);
 bool configFromJson(JsonVariantConst source, DeviceConfig& config, String& error);
 bool applyConfigPatch(JsonVariantConst patch, DeviceConfig& config, String& error);
+bool configRequiresRestart(const DeviceConfig& before, const DeviceConfig& after);
 
 }  // namespace epd

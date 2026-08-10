@@ -1,31 +1,21 @@
 #pragma once
 
 #include "toolkit/app.h"
+#include "toolkit/usage_model.h"
 
 namespace epd {
 
-struct CodexAppState : public AppState {
-  CodexUsageState usage;
-  uint16_t battery_mv = 0;
-};
-
-class CodexUsageApp : public IApp {
+class CodexUsageRenderer : public IRenderer {
  public:
-  AppManifest manifest() const override;
-  bool validateConfig(const DeviceConfig& config, String& error) const override;
-  UpdateResult update(AppContext& context) override;
-  void buildUi(lv_obj_t* root, const AppState& state) override;
-  uint32_t nextWakeSeconds(const UpdateResult& result) const override;
-  AppState& state() override { return state_; }
-
-  CodexAppState& codexState() { return state_; }
+  const char* id() const override { return "codex.rate_limits"; }
+  const char* schemaId() const override { return "codex.rate_limits"; }
+  uint16_t schemaVersion() const override { return 1; }
+  void buildUi(lv_obj_t* root, const ResourceRecord* resource,
+               const RenderContext& context) override;
 
  private:
-  static void buildWindowRow(lv_obj_t* root, int16_t y, const char* label,
-                             const RateLimitWindow& window);
-  static String resetText(const RateLimitWindow& window);
-  CodexAppState state_;
+  static CodexUsageState parse(const ResourceRecord* resource, uint64_t now);
+  static String resetText(const RateLimitWindow& window, uint64_t now);
 };
 
 }  // namespace epd
-
