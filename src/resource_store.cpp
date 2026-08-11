@@ -172,7 +172,7 @@ bool ResourceStore::load(String& error) {
   records_.clear();
   TOOLKIT_LOG("resource", "loading NVS snapshot");
   Preferences preferences;
-  if (!preferences.begin("epd_res3", false)) {
+  if (!preferences.begin("epd_res4", false)) {
     error = "cannot open resource namespace";
     TOOLKIT_LOG("resource", error);
     return false;
@@ -224,7 +224,7 @@ bool ResourceStore::saveIfDue(uint64_t now, bool force, String& error) {
     return false;
   }
   Preferences preferences;
-  if (!preferences.begin("epd_res3", false)) {
+  if (!preferences.begin("epd_res4", false)) {
     error = "cannot open resource namespace";
     TOOLKIT_LOG("resource", error);
     return false;
@@ -246,7 +246,7 @@ bool ResourceStore::saveIfDue(uint64_t now, bool force, String& error) {
 bool ResourceStore::erase(String& error) {
   records_.clear();
   Preferences preferences;
-  if (!preferences.begin("epd_res3", false)) {
+  if (!preferences.begin("epd_res4", false)) {
     error = "cannot open resource namespace";
     TOOLKIT_LOG("resource", error);
     return false;

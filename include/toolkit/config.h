@@ -5,7 +5,11 @@
 
 namespace epd {
 
-constexpr uint16_t kConfigSchemaVersion = 3;
+constexpr uint16_t kConfigSchemaVersion = 4;
+constexpr size_t kMaxPageBindings = 8;
+constexpr size_t kSlotIdMaxBytes = 32;
+constexpr size_t kPageIdMaxBytes = 64;
+constexpr size_t kResourceKeyMaxBytes = 64;
 
 enum class PowerProfile : uint8_t { kMains, kBattery };
 enum class Io12Mode : uint8_t { kDisabled, kKey };
@@ -34,14 +38,27 @@ struct PowerSettings {
 };
 
 struct DisplaySettings {
-  uint16_t full_after_partial_count = 12;
+  uint16_t full_after_partial_count = 60;
   uint32_t full_max_age_sec = 86400;
-  uint8_t full_area_threshold_percent = 40;
+  uint8_t full_area_threshold_percent = 70;
 };
 
-struct ViewSettings {
-  String renderer_id = "codex.rate_limits";
-  String resource_key = "codex/default";
+struct PageBinding {
+  String slot_id;
+  String resource_key;
+};
+
+struct PageSettings {
+  String id = "home";
+  PageBinding bindings[kMaxPageBindings]{{"codex", "codex/default"}};
+  size_t binding_count = 1;
+
+  const PageBinding* findBinding(const String& slot_id) const {
+    for (size_t index = 0; index < binding_count; ++index) {
+      if (bindings[index].slot_id == slot_id) return &bindings[index];
+    }
+    return nullptr;
+  }
 };
 
 struct DeviceConfig {
@@ -51,7 +68,7 @@ struct DeviceConfig {
   HardwareSettings hardware;
   PowerSettings power;
   DisplaySettings display;
-  ViewSettings view;
+  PageSettings page;
 };
 
 bool validateConfig(const DeviceConfig& config, String& error);

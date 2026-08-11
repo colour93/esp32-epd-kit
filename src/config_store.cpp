@@ -51,7 +51,7 @@ bool ConfigStore::load(DeviceConfig& config) {
   Preferences preferences;
   // Read-write mode creates the namespace on a pristine NVS partition. This
   // avoids Preferences logging NOT_FOUND as an error during normal first boot.
-  if (!preferences.begin("epd_cfg3", false)) {
+  if (!preferences.begin("epd_cfg4", false)) {
     TOOLKIT_LOG("config", "cannot open NVS namespace");
     return false;
   }
@@ -102,7 +102,7 @@ bool ConfigStore::save(const DeviceConfig& config, String& error) {
   }
 
   Preferences preferences;
-  if (!preferences.begin("epd_cfg3", false)) {
+  if (!preferences.begin("epd_cfg4", false)) {
     error = "cannot open NVS namespace";
     TOOLKIT_LOG("config", error);
     return false;
@@ -144,7 +144,7 @@ bool ConfigStore::save(const DeviceConfig& config, String& error) {
 
 bool ConfigStore::erase(String& error) {
   Preferences preferences;
-  if (!preferences.begin("epd_cfg3", false)) {
+  if (!preferences.begin("epd_cfg4", false)) {
     error = "cannot open NVS namespace";
     TOOLKIT_LOG("config", error);
     return false;

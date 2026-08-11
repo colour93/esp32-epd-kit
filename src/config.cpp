@@ -88,10 +88,24 @@ bool validateConfig(const DeviceConfig& config, String& error) {
     error = "invalid display refresh policy";
     return false;
   }
-  if (!boundedIdentifier(config.view.renderer_id, 64) ||
-      !boundedIdentifier(config.view.resource_key, 64)) {
-    error = "invalid renderer id or resource key";
+  if (!boundedIdentifier(config.page.id, kPageIdMaxBytes) ||
+      config.page.binding_count > kMaxPageBindings) {
+    error = "invalid page id or too many bindings";
     return false;
+  }
+  for (size_t index = 0; index < config.page.binding_count; ++index) {
+    const PageBinding& binding = config.page.bindings[index];
+    if (!boundedIdentifier(binding.slot_id, kSlotIdMaxBytes) ||
+        !boundedIdentifier(binding.resource_key, kResourceKeyMaxBytes)) {
+      error = "invalid page slot id or resource key";
+      return false;
+    }
+    for (size_t other = index + 1; other < config.page.binding_count; ++other) {
+      if (binding.slot_id == config.page.bindings[other].slot_id) {
+        error = "duplicate page binding";
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -125,9 +139,13 @@ void configToJson(const DeviceConfig& config, JsonObject out) {
   display["full_area_threshold_percent"] =
       config.display.full_area_threshold_percent;
 
-  JsonObject view = out["view"].to<JsonObject>();
-  view["renderer_id"] = config.view.renderer_id;
-  view["resource_key"] = config.view.resource_key;
+  JsonObject page = out["page"].to<JsonObject>();
+  page["id"] = config.page.id;
+  JsonObject bindings = page["bindings"].to<JsonObject>();
+  for (size_t index = 0; index < config.page.binding_count; ++index) {
+    bindings[config.page.bindings[index].slot_id] =
+        config.page.bindings[index].resource_key;
+  }
 }
 
 bool applyConfigPatch(JsonVariantConst source, DeviceConfig& config,
@@ -226,14 +244,34 @@ bool applyConfigPatch(JsonVariantConst source, DeviceConfig& config,
     return false;
   }
 
-  JsonVariantConst view = source["view"];
-  if (!requireObject(view, "view", error)) return false;
-  if (view.is<JsonObjectConst>() &&
-      (!readString(view["renderer_id"], config.view.renderer_id,
-                   "view.renderer_id", error) ||
-       !readString(view["resource_key"], config.view.resource_key,
-                   "view.resource_key", error))) {
-    return false;
+  JsonVariantConst page = source["page"];
+  if (!requireObject(page, "page", error)) return false;
+  if (page.is<JsonObjectConst>()) {
+    if (!readString(page["id"], config.page.id, "page.id", error)) {
+      return false;
+    }
+    JsonVariantConst bindings = page["bindings"];
+    if (!bindings.isNull()) {
+      if (!bindings.is<JsonObjectConst>()) {
+        error = "page.bindings must be an object";
+        return false;
+      }
+      config.page.binding_count = 0;
+      for (JsonPairConst pair : bindings.as<JsonObjectConst>()) {
+        if (config.page.binding_count >= kMaxPageBindings) {
+          error = "page.bindings exceeds maximum of 8";
+          return false;
+        }
+        if (!pair.value().is<const char*>()) {
+          error = "page binding resource key must be a string";
+          return false;
+        }
+        PageBinding& binding =
+            config.page.bindings[config.page.binding_count++];
+        binding.slot_id = pair.key().c_str();
+        binding.resource_key = pair.value().as<const char*>();
+      }
+    }
   }
   return validateConfig(config, error);
 }

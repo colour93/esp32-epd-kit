@@ -28,7 +28,7 @@ class ConfigStore {
     String payload;
   };
 
-  static constexpr uint32_t kSlotMagic = 0x43464733U;  // "CFG3"
+  static constexpr uint32_t kSlotMagic = 0x43464734U;  // "CFG4"
   static constexpr size_t kMaxPayloadBytes = 8192;
 
   SlotData readSlot(Preferences& preferences, const char* key);

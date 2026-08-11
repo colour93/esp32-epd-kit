@@ -37,7 +37,7 @@ constexpr uint32_t versionHash(const char* value,
 
 // Bump the layout revision when rendering semantics change. Combining it with
 // the firmware version also invalidates the RTC frame after a version upgrade.
-constexpr uint32_t kDisplayLayoutRevision = 3;
+constexpr uint32_t kDisplayLayoutRevision = 4;
 constexpr uint32_t kDisplayUiVersion =
     versionHash(EPD_TOOLKIT_VERSION) ^ kDisplayLayoutRevision;
 constexpr uint32_t kRtcMagic = 0x45504431U;  // "EPD1"

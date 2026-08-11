@@ -23,16 +23,16 @@ class ToolkitCharacteristicCallbacks;
 class BleProtocolService {
  public:
   static constexpr const char* kServiceUuid =
-      "f0a30000-0451-4000-b000-000000000001";
+      "f0a40000-0451-4000-b000-000000000001";
   static constexpr const char* kRxUuid =
-      "f0a30001-0451-4000-b000-000000000001";
+      "f0a40001-0451-4000-b000-000000000001";
   static constexpr const char* kTxUuid =
-      "f0a30002-0451-4000-b000-000000000001";
-  static constexpr uint8_t kProtocolMajor = 3;
+      "f0a40002-0451-4000-b000-000000000001";
+  static constexpr uint8_t kProtocolMajor = 4;
   static constexpr uint8_t kProtocolMinor = 0;
 
   BleProtocolService(ConfigStore& config_store, ResourceStore& resources,
-                     RendererRegistry& renderers, DisplayManager& display);
+                     PageRegistry& pages, DisplayManager& display);
   ~BleProtocolService();
 
   bool begin(const DeviceConfig& config, uint16_t battery_mv,
@@ -92,7 +92,7 @@ class BleProtocolService {
     bool retryable = false;
   };
 
-  static constexpr uint8_t kFrameMagic = 0xE3;
+  static constexpr uint8_t kFrameMagic = 0xE4;
   static constexpr uint8_t kFlagKindMask = 0x03;
   static constexpr uint8_t kFlagStart = 0x04;
   static constexpr uint8_t kFlagEnd = 0x08;
@@ -146,7 +146,7 @@ class BleProtocolService {
 
   ConfigStore& config_store_;
   ResourceStore& resources_;
-  RendererRegistry& renderers_;
+  PageRegistry& pages_;
   DisplayManager& display_;
   DeviceConfig current_;
   DeviceConfig staged_;
@@ -191,7 +191,7 @@ class BleProtocolService {
   bool factory_reset_requested_ = false;
   bool factory_code_pending_ = false;
   bool sleep_requested_ = false;
-  bool selected_resource_stale_ = false;
+  uint32_t page_freshness_signature_ = 0;
 };
 
 }  // namespace epd

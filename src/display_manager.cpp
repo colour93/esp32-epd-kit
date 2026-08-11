@@ -19,6 +19,7 @@ struct RtcDisplayState {
   uint16_t partial_count;
   uint16_t reserved;
   uint64_t last_full_at;
+  uint32_t page_identity_hash;
   bool low_battery_latched;
   uint8_t frame[hardware::kLogicalFrameBytes];
 };
@@ -87,6 +88,10 @@ bool DisplayManager::oldFrameValid() const {
              frameCrc(g_rtc_display_state.frame, sizeof(g_rtc_display_state.frame));
 }
 
+uint32_t DisplayManager::retainedPageHash() const {
+  return oldFrameValid() ? g_rtc_display_state.page_identity_hash : 0;
+}
+
 bool DisplayManager::lowBatteryLatched() const {
   return g_rtc_display_state.low_battery_latched;
 }
@@ -130,6 +135,28 @@ void DisplayManager::flushCallback(lv_display_t* display, const lv_area_t* area,
   lv_display_flush_ready(display);
 }
 
+void DisplayManager::regionFlushCallback(lv_display_t* display,
+                                         const lv_area_t* area,
+                                         uint8_t* pixel_map) {
+  auto* target =
+      static_cast<RegionFlushTarget*>(lv_display_get_user_data(display));
+  pixel_map += 8;
+  const uint16_t area_width = area->x2 - area->x1 + 1;
+  const uint16_t area_height = area->y2 - area->y1 + 1;
+  const uint16_t area_stride = (area_width + 7U) / 8U;
+  for (uint16_t y = 0; y < area_height; ++y) {
+    for (uint16_t x = 0; x < area_width; ++x) {
+      const size_t source_index = static_cast<size_t>(y) * area_stride + x / 8U;
+      const bool white =
+          (pixel_map[source_index] & (0x80U >> (x % 8U))) != 0;
+      writeLogicalPixel(target->display->frame_,
+                        target->bounds.x + area->x1 + x,
+                        target->bounds.y + area->y1 + y, white);
+    }
+  }
+  lv_display_flush_ready(display);
+}
+
 void DisplayManager::begin() {
   memset(frame_, 0xFF, sizeof(frame_));
   lv_init();
@@ -154,17 +181,65 @@ lv_obj_t* DisplayManager::addText(lv_obj_t* parent, const char* text, int16_t x,
   return label;
 }
 
-void DisplayManager::renderView(IRenderer& renderer,
-                                const ResourceRecord* resource,
-                                const RenderContext& context) {
-  TOOLKIT_LOG("display", String("render renderer=") + renderer.id() +
-                             " resource=" +
-                             (resource == nullptr ? "missing" : resource->key));
+void DisplayManager::renderPage(IPage& page, const PageContext& context,
+                                uint32_t page_identity_hash) {
+  TOOLKIT_LOG("display", String("render page=") + page.manifest().id);
   lv_obj_t* root = lv_screen_active();
   lv_obj_clean(root);
-  renderer.buildUi(root, resource, context);
+  page.buildUi(root, context);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
+  pending_page_hash_ = page_identity_hash;
+}
+
+bool DisplayManager::renderTimedRegion(IPage& page, const TimedRegion& region,
+                                       const RuntimeContext& context,
+                                       uint32_t page_identity_hash) {
+  if (!oldFrameValid() || retainedPageHash() != page_identity_hash ||
+      region.bounds.empty() || region.bounds.x < 0 || region.bounds.y < 0 ||
+      region.bounds.x + region.bounds.width > hardware::kLogicalWidth ||
+      region.bounds.y + region.bounds.height > hardware::kLogicalHeight) {
+    return false;
+  }
+  memcpy(frame_, g_rtc_display_state.frame, sizeof(frame_));
+  RegionFlushTarget target{this, region.bounds};
+  lv_display_t* region_display =
+      lv_display_create(region.bounds.width, region.bounds.height);
+  if (region_display == nullptr) return false;
+  lv_display_set_user_data(region_display, &target);
+  lv_display_set_color_format(region_display, LV_COLOR_FORMAT_I1);
+  lv_display_set_flush_cb(region_display, regionFlushCallback);
+  lv_display_set_buffers(region_display, region_draw_buffer_, nullptr,
+                         sizeof(region_draw_buffer_),
+                         LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_default(region_display);
+  lv_obj_t* root = lv_screen_active();
+  lv_obj_set_style_bg_color(root, lv_color_white(), 0);
+  lv_obj_set_style_border_width(root, 0, 0);
+  lv_obj_set_style_pad_all(root, 0, 0);
+  page.buildTimedRegion(region.id, root, context);
+  lv_obj_invalidate(root);
+  lv_refr_now(region_display);
+  lv_display_set_default(lv_display_);
+  lv_display_delete(region_display);
+  pending_page_hash_ = page_identity_hash;
+  TOOLKIT_LOG("display", String("render timed region=") + region.id + " page=" +
+                             page.manifest().id);
+  return true;
+}
+
+void DisplayManager::renderPageDiagnostic(const String& page_id) {
+  lv_obj_t* root = lv_screen_active();
+  lv_obj_clean(root);
+  styleScreen(root);
+  addText(root, "页面不可用", 18, 10, &ui_font_zh_16);
+  addRule(root, 37);
+  addText(root, "未知 page id", 18, 46, &ui_font_zh_14);
+  addText(root, page_id.c_str(), 18, 68, &lv_font_montserrat_14);
+  addText(root, "请通过管理端重新配置", 18, 101, &ui_font_zh_14);
+  lv_obj_invalidate(root);
+  lv_refr_now(lv_display_);
+  pending_page_hash_ = 0;
 }
 
 void DisplayManager::renderPairing(uint32_t passkey, bool configured,
@@ -186,6 +261,7 @@ void DisplayManager::renderPairing(uint32_t passkey, bool configured,
   addText(root, "请在电脑端输入上方号码", 18, 101, &ui_font_zh_14);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
+  pending_page_hash_ = 0;
 }
 
 void DisplayManager::renderLowBattery(uint16_t millivolts, bool connected) {
@@ -201,6 +277,7 @@ void DisplayManager::renderLowBattery(uint16_t millivolts, bool connected) {
           &ui_font_zh_14);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
+  pending_page_hash_ = 0;
 }
 
 void DisplayManager::renderFactoryResetConfirmation(uint32_t code,
@@ -217,6 +294,7 @@ void DisplayManager::renderFactoryResetConfirmation(uint32_t code,
   addText(root, "在受信主机输入确认码", 18, 94, &ui_font_zh_14);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
+  pending_page_hash_ = 0;
 }
 
 void DisplayManager::logicalToNative(const uint8_t* logical, uint8_t* native) {
@@ -315,6 +393,7 @@ PresentResult DisplayManager::present(const DisplaySettings& settings,
   g_rtc_display_state.magic = hardware::kRtcMagic;
   g_rtc_display_state.ui_version = hardware::kDisplayUiVersion;
   g_rtc_display_state.frame_crc = frameCrc(frame_, sizeof(frame_));
+  g_rtc_display_state.page_identity_hash = pending_page_hash_;
   if (full) {
     g_rtc_display_state.partial_count = 0;
     if (now >= 1700000000ULL) g_rtc_display_state.last_full_at = now;

@@ -1,26 +1,40 @@
 # ESP32 E-Paper Toolkit
 
-BLE-only firmware for the Waveshare 2.13inch e-Paper Cloud Module V4. It receives versioned semantic resources from a desktop Agent and renders them locally. The first renderer displays Codex rate-limit windows.
-
-## Runtime
+Waveshare 2.13inch e-Paper Cloud Module V4 的 BLE-only 固件。固件 `0.3.x` 使用 BLE Protocol v4 接收版本化语义 Resource，并由 Page 编排多个 Resource Slot 与可复用 Widget。
 
 ```text
-Codex app-server ──stdio──> Rust Agent ──BLE v3──> ResourceStore
-                                                      │
-                                                      └──> RendererRegistry ──> LVGL / GxEPD2
+Desktop Agent -> BLE v4 -> ResourceStore -> PageResources -> Model -> Widget
+                                      RuntimeContext -------> Timed Region
 ```
 
-The firmware has no Wi-Fi, SNTP, TLS, HTTP client, certificate bundle, OAuth, relay token, or OpenAI credential path.
+ESP32 不连接 Wi-Fi 或云服务，也不保存 Codex、飞书或其他服务凭据。
 
-Core components:
+## 当前功能
 
-- `ResourceStore`: generic `{key,schema_id,schema_version,revision,...}` records with CRC, TTL, idempotent revisions, and optional NVS snapshots.
-- `RendererRegistry`: maps renderer IDs to accepted semantic schemas.
-- `CodexUsageRenderer`: renders `codex.rate_limits/v1` using primary/secondary windows, reset time, plan, source status, and freshness.
-- `BleProtocolService`: authenticated BLE v3 framing, owner/trusted authorization, configuration, resources, and events.
-- `DisplayManager`: logical-frame diffing, dirty rectangles, partial/full policy, and unchanged-frame suppression.
+- 默认 `home` Page：每分钟时钟、Codex Compact Widget、飞书未配置预留区；
+- `codex.usage` Page：Codex 完整额度页；
+- fixed-capacity `PageRegistry` 与严格 Page/Slot/Binding 校验；
+- Resource missing/invalid/stale/fresh 状态；
+- framebuffer diff、dirty rect、局刷/全刷策略和无变化抑制；
+- 电池模式时钟 RTC 快路径，不启动 BLE、不加载 Resource snapshot；
+- LE Secure Connections、MITM、bonding、owner/trusted 权限。
 
-## Hardware
+默认配置使用 `home`，绑定 `codex -> codex/default`。全刷策略为 60 次局刷、24 小时或 70% dirty area。
+
+## v4 升级
+
+v4 不兼容 v3，不提供 migration。固件只使用 `epd_cfg4`、`epd_res4`、`epd_sec4`；首次没有有效 v4 配置时会清除 NimBLE bonds 并创建新设备配置。升级后需在操作系统删除旧配对并重新配对。
+
+## 构建
+
+```bash
+pio run -e esp32dev
+pio run -e esp32dev_release
+```
+
+默认面板为 `GxEPD2_213_B74`，逻辑画布为 250x122。项目使用 `huge_app.csv`，不支持 OTA。调试串口为 `115200`。
+
+## 硬件
 
 | Function | GPIO |
 |---|---:|
@@ -33,46 +47,7 @@ Core components:
 | optional key | 12 |
 | optional VBAT/3 ADC | 36 |
 
-The default panel class is `GxEPD2_213_B74` with a 250x122 logical landscape canvas.
-
-## Safe defaults
-
-- battery disabled;
-- IO12 disabled and not configured by firmware;
-- `mains` power profile;
-- renderer `codex.rate_limits`;
-- resource key `codex/default`;
-- locale `zh-CN`, timezone `Asia/Shanghai`.
-
-Battery and IO12 are compile-time-capable but runtime-configurable. Hardware and power changes take effect after restart. When battery is disabled, the firmware does not read GPIO36, register Battery Service, or enter low-battery lock. Critical battery disables BLE and holds the screen while timed ADC checks wait for `recovery_mv`.
-
-In the `battery` profile an owned device wakes every `power.wake_interval_sec` (default 300 seconds), advertises, accepts an Agent sync, finishes rendering and indication delivery, then returns to deep sleep. IO12 key mode adds external wake. If no Agent completes synchronization, the awake window ends after 120 seconds. Advertising carries identity/state only; resource data is sent after the Agent connects.
-
-## Security and storage
-
-BLE requires LE Secure Connections, MITM, and bonding. The e-paper shows a six-digit passkey. The first bond becomes owner; owner can enroll up to three trusted hosts for 120 seconds. Trusted hosts may synchronize resources but cannot change hardware, bonds, ownership, or factory state.
-
-v3 uses new NVS namespaces:
-
-- `epd_cfg3`: CRC-protected double-slot configuration;
-- `epd_res3`: snapshot resources;
-- `epd_sec3`: owner identity.
-
-Older configuration and bond state is not read or migrated. No migration is created.
-
-## Build
-
-```bash
-pio run -e esp32dev
-pio run -e esp32dev_release
-```
-
-The project uses a `huge_app.csv` partition because OTA is not supported. Debug serial output is 115200 baud and uses the `[toolkit]` prefix.
-
-## Serial recovery
-
-The recovery console is available in debug and release firmware at `115200 8N1`.
-It does not require BLE, an owner bond, or IO12. Open the monitor and type `help`:
+## 串口恢复
 
 ```bash
 pio device monitor -b 115200
@@ -86,16 +61,13 @@ factory-reset prepare
 factory-reset confirm <code>
 ```
 
-`io12 disable` preserves resources and security state, then restarts with IO12
-left unconfigured. Factory reset uses a six-digit code valid for 30 seconds and
-erases `epd_cfg3`, `epd_res3`, `epd_sec3`, and all BLE bonds before restarting.
+Factory reset 清除 v4 配置、资源、安全状态和全部 BLE bonds。GPIO12 同时是 ESP32 boot-strapping pin；若硬件持续拉高导致设备无法启动，需先修复电路或复位时拉低 GPIO12。
 
-GPIO12 is also an ESP32 boot-strapping pin. If physical damage holds it high and
-the ESP32 cannot boot far enough to print the console banner, firmware recovery
-cannot run; repair the circuit or hold GPIO12 low during reset first.
+## 权威文档
 
-## Documentation
-
-- [BLE Protocol v3](docs/ble_protocol_v3.md)
-- [Codex Rate Limits via Local Agent](docs/openai_codex_usage.md)
-- [Desktop Agent and workbench](../esp32-epd-kit-web/README.md)
+- [v4 架构](docs/architecture_v4.md)
+- [BLE Protocol v4 Host Implementation Guide](docs/ble_protocol_v4.md)
+- [功能组件开发规范](docs/feature_component_development.md)
+- [Codex Rate Limits Schema 与 Producer](docs/openai_codex_usage.md)
+- [飞书项目扩展方向](docs/feishu_project.md)
+- [Desktop Agent 与 Web 工作台](../esp32-epd-kit-web/README.md)

@@ -1,542 +1,59 @@
-# 飞书项目凭据登录与数据查询
+# 飞书项目扩展方向
 
-## 1. 凭据登录
+本文记录飞书项目在 v4 架构中的产品边界。当前版本不实现飞书 schema、Producer、OAuth 或查询逻辑。
 
-ESP32 不需要内置 `plugin_secret` 或固定 `client_secret`。
+## 当前状态
 
-飞书项目支持：
+`home` Page manifest 包含 reserved slot：
+
+```cpp
+{"feishu_project", nullptr, 0, false, SlotStatus::kReserved}
+```
+
+该 slot 不可绑定，屏幕固定显示“未配置”。它只用于明确未来布局位置，不表示协议已经支持飞书 payload。
+
+## 强制架构边界
+
+未来飞书功能必须实现为桌面 Agent Producer：
 
 ```text
-OAuth Discovery
-→ Dynamic Client Registration
-→ Device Code 登录
-→ access_token / refresh_token
+飞书项目 API/MCP
+  -> Agent 内 Feishu Producer
+  -> versioned semantic Resource
+  -> ResourcePublisher
+  -> BLE v4
+  -> Home active slot / 独立 Page
 ```
 
----
+- ESP32 不执行 OAuth discovery、device code、token refresh 或 HTTP/MCP 请求；
+- ESP32 NVS 不保存 `client_id`、`access_token`、`refresh_token`、cookie 或 client secret；
+- Resource payload 不包含任何凭据；
+- 浏览器只控制本机 Agent，不接收 refresh token；
+- BLE 只传输页面需要的最小语义结果。
 
-### 1.1 获取 OAuth 配置
+旧的“ESP32 保存 OAuth 凭据并直接查询飞书”方向已废弃，不得据此实现。
 
-请求：
+## 后续实施前置决策
 
-```http
-GET https://project.feishu.cn/.well-known/oauth-authorization-server
-```
+实现前必须先确定并写成 schema 文档：
 
-需要读取以下字段：
+1. 页面要回答的具体问题，例如我的进行中事项、项目健康度或迭代进度；
+2. Resource key 的实例模型，单账号、单空间还是单项目；
+3. payload 字段、状态枚举、时间单位、最大条目数和隐私裁剪；
+4. TTL、Producer 轮询周期、battery auto-sync 参与策略；
+5. Agent 本地凭据存储和重新授权流程；
+6. Home Compact Widget 与可选完整 Page 的稳定 bounds。
 
-```json
-{
-  "token_endpoint": "...",
-  "registration_endpoint": "...",
-  "device_authorization_endpoint": "..."
-}
-```
+这些决策完成前，不应给 reserved slot 补虚构的 schema/version。
 
----
+## 预期改造步骤
 
-### 1.2 注册 OAuth Client
+1. 按 [功能组件开发规范](feature_component_development.md) 编写 `feishu.*` schema 文档。
+2. 在 Agent 新增 Feishu Producer，凭据和 API 客户端全部封装在模块内。
+3. Producer 仅发布 `SemanticResource`，不直接调用 BLE 或控制休眠。
+4. 固件新增 Model 与 Compact/Full Widget。
+5. 把 Home 的 `feishu_project` 从 reserved 改为 active slot，声明精确 schema/version。
+6. 如有需要新增独立 Page，并在编译期 Registry 注册。
+7. 通过通用 Web Resource 编辑器先验证 schema，再接入真实 Producer。
 
-请求：
-
-```http
-POST <registration_endpoint>
-Content-Type: application/json
-```
-
-Body：
-
-```json
-{
-  "client_name": "esp32-feishu-project",
-  "grant_types": [
-    "urn:ietf:params:oauth:grant-type:device_code",
-    "refresh_token"
-  ],
-  "token_endpoint_auth_method": "none"
-}
-```
-
-响应：
-
-```json
-{
-  "client_id": "xxxxxxxx"
-}
-```
-
-部分响应可能包在 `data` 内：
-
-```json
-{
-  "code": 0,
-  "data": {
-    "client_id": "xxxxxxxx"
-  }
-}
-```
-
-需要保存：
-
-```text
-client_id
-```
-
----
-
-### 1.3 获取 Device Code
-
-请求：
-
-```http
-POST <device_authorization_endpoint>
-Content-Type: application/x-www-form-urlencoded
-```
-
-Body：
-
-```text
-client_id=<client_id>
-```
-
-响应：
-
-```json
-{
-  "device_code": "xxxxxxxx",
-  "user_code": "ABCD-EFGH",
-  "verification_uri": "https://...",
-  "verification_uri_complete": "https://...",
-  "expires_in": 600,
-  "interval": 5
-}
-```
-
-将：
-
-```text
-verification_uri_complete
-```
-
-提供给用户打开或生成二维码。
-
-用户在手机浏览器中完成飞书授权。
-
----
-
-### 1.4 轮询授权结果
-
-每隔响应中的：
-
-```text
-interval
-```
-
-秒请求：
-
-```http
-POST <token_endpoint>
-Content-Type: application/x-www-form-urlencoded
-```
-
-Body：
-
-```text
-grant_type=urn:ietf:params:oauth:grant-type:device_code
-&device_code=<device_code>
-&client_id=<client_id>
-```
-
-尚未授权：
-
-```json
-{
-  "error": "authorization_pending"
-}
-```
-
-继续轮询。
-
-如果返回：
-
-```json
-{
-  "error": "slow_down"
-}
-```
-
-增加轮询间隔，例如：
-
-```text
-interval += 5
-```
-
-如果返回：
-
-```json
-{
-  "error": "expired_token"
-}
-```
-
-Device Code 已过期，需要重新开始授权。
-
-授权成功：
-
-```json
-{
-  "access_token": "xxxxxxxx",
-  "refresh_token": "xxxxxxxx",
-  "expires_in": 3600
-}
-```
-
-设备需要持久化：
-
-```text
-client_id
-access_token
-refresh_token
-expires_at
-```
-
-其中：
-
-```text
-expires_at = 当前时间 + expires_in
-```
-
----
-
-## 2. 刷新凭据
-
-`access_token` 过期前，使用 `refresh_token` 获取新的 Token。
-
-请求：
-
-```http
-POST <token_endpoint>
-Content-Type: application/x-www-form-urlencoded
-```
-
-Body：
-
-```text
-grant_type=refresh_token
-&refresh_token=<refresh_token>
-&client_id=<client_id>
-```
-
-不需要：
-
-```text
-client_secret
-```
-
-响应：
-
-```json
-{
-  "access_token": "new-access-token",
-  "refresh_token": "new-refresh-token",
-  "expires_in": 3600
-}
-```
-
-更新：
-
-```text
-access_token
-expires_at
-```
-
-如果返回了新的：
-
-```text
-refresh_token
-```
-
-则同时覆盖旧值。
-
-如果没有返回新的 `refresh_token`，继续保留旧值。
-
-建议 Token 使用策略：
-
-```text
-调用接口
-  ↓
-HTTP 200
-  ↓
-正常处理
-```
-
-如果返回：
-
-```text
-401 Unauthorized
-```
-
-则：
-
-```text
-刷新 access_token
-→ 重试原请求一次
-```
-
-第二次仍然 `401` 时，认为登录凭据已失效，需要重新执行 Device Code 授权。
-
----
-
-# 3. 数据查询
-
-飞书项目 MCP 地址：
-
-```text
-https://project.feishu.cn/mcp_server/v1
-```
-
-使用：
-
-```http
-Authorization: Bearer <access_token>
-```
-
-进行认证。
-
-MCP 当前可以直接通过 HTTP POST + JSON-RPC 调用。
-
----
-
-## 3.1 查询 MCP Tool
-
-请求：
-
-```http
-POST https://project.feishu.cn/mcp_server/v1
-Authorization: Bearer <access_token>
-Content-Type: application/json
-```
-
-Body：
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "search_by_mql",
-    "arguments": {
-      "...": "..."
-    }
-  }
-}
-```
-
-其中：
-
-```text
-search_by_mql
-```
-
-用于执行飞书项目 MQL 查询。
-
----
-
-## 3.2 获取 search_by_mql 参数
-
-开发阶段可以调用：
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/list"
-}
-```
-
-完整请求：
-
-```http
-POST https://project.feishu.cn/mcp_server/v1
-Authorization: Bearer <access_token>
-Content-Type: application/json
-```
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/list"
-}
-```
-
-在返回的 Tool 列表中找到：
-
-```text
-search_by_mql
-```
-
-并读取：
-
-```text
-inputSchema
-```
-
-确认实际参数后，可以直接把参数结构固化进 ESP32。
-
-正式运行时不需要重复调用 `tools/list`。
-
----
-
-## 3.3 查询数量
-
-例如业务目标：
-
-```text
-查询某个分类下有多少工作项
-```
-
-ESP32 最终只需要发送：
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "search_by_mql",
-    "arguments": {
-      "MQL相关参数": "..."
-    }
-  }
-}
-```
-
-MQL 中加入对应分类筛选条件。
-
-返回结果通常类似：
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "{\"list\":[],\"total\":37}"
-      }
-    ],
-    "isError": false
-  }
-}
-```
-
-需要进行两次 JSON 解析。
-
-第一次获取：
-
-```text
-result.content[0].text
-```
-
-得到：
-
-```json
-{
-  "list": [],
-  "total": 37
-}
-```
-
-第二次解析其中的：
-
-```text
-total
-```
-
-即可得到：
-
-```text
-37
-```
-
----
-
-# 4. 最终保存的凭据
-
-ESP32 最终只需要保存：
-
-```json
-{
-  "client_id": "...",
-  "access_token": "...",
-  "refresh_token": "...",
-  "expires_at": 1234567890
-}
-```
-
-其中最关键的是：
-
-```text
-client_id
-refresh_token
-```
-
-`access_token` 可以随时通过 `refresh_token` 重新获取。
-
-推荐将这些数据保存到：
-
-```text
-NVS / Preferences
-```
-
-正式设备建议启用 NVS Encryption 或 Flash Encryption。
-
----
-
-# 5. 最终调用流程
-
-首次绑定：
-
-```text
-OAuth Discovery
-      ↓
-注册 client_id
-      ↓
-申请 Device Code
-      ↓
-用户扫码授权
-      ↓
-轮询 token
-      ↓
-保存 client_id
-access_token
-refresh_token
-```
-
-正常查询：
-
-```text
-检查 access_token
-      ↓
-必要时 refresh
-      ↓
-POST /mcp_server/v1
-      ↓
-tools/call
-      ↓
-search_by_mql
-      ↓
-解析 total
-```
-
-整个流程不需要：
-
-```text
-Plugin ID
-Plugin Secret
-独立服务端
-Cloudflare Worker
-```
+飞书认证端点和 MCP tool 的实际可用性必须在实施时依据官方资料重新验证；本文不冻结尚未实现的第三方接口细节。

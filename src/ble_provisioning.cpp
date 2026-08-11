@@ -68,11 +68,11 @@ class ToolkitCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 
 BleProtocolService::BleProtocolService(ConfigStore& config_store,
                                        ResourceStore& resources,
-                                       RendererRegistry& renderers,
+                                       PageRegistry& pages,
                                        DisplayManager& display)
     : config_store_(config_store),
       resources_(resources),
-      renderers_(renderers),
+      pages_(pages),
       display_(display) {}
 
 BleProtocolService::~BleProtocolService() { stop(); }
@@ -127,7 +127,7 @@ void BleProtocolService::loadSecurityState() {
         String(NimBLEDevice::getBondedAddress(index).toString().c_str()));
   }
   Preferences preferences;
-  if (preferences.begin("epd_sec3", false)) {
+  if (preferences.begin("epd_sec4", false)) {
     owner_address_ = preferences.getString("owner", "");
     if (!owner_address_.isEmpty() && !isKnownBond(owner_address_)) {
       owner_address_ = "";
@@ -142,7 +142,7 @@ void BleProtocolService::loadSecurityState() {
 void BleProtocolService::saveOwner(const NimBLEAddress& address) {
   owner_address_ = address.toString().c_str();
   Preferences preferences;
-  if (preferences.begin("epd_sec3", false)) {
+  if (preferences.begin("epd_sec4", false)) {
     preferences.putString("owner", owner_address_);
     preferences.end();
   }
@@ -152,7 +152,7 @@ void BleProtocolService::clearSecurityState() {
   owner_address_ = "";
   known_bonds_.clear();
   Preferences preferences;
-  if (preferences.begin("epd_sec3", false)) {
+  if (preferences.begin("epd_sec4", false)) {
     preferences.clear();
     preferences.end();
   }
@@ -231,11 +231,13 @@ bool BleProtocolService::begin(const DeviceConfig& config, uint16_t battery_mv,
   current_ = config;
   staged_ = config;
   passkey_ = passkey;
-  const ResourceRecord* selected = resources_.get(current_.view.resource_key);
   const uint64_t now = unixNow();
-  selected_resource_stale_ = selected != nullptr && selected->ttl_sec > 0 &&
-                             now > selected->updated_at &&
-                             now - selected->updated_at > selected->ttl_sec;
+  IPage* active_page = pages_.find(current_.page.id);
+  page_freshness_signature_ =
+      active_page == nullptr
+          ? 0
+          : PageResources(active_page->manifest(), current_.page, resources_, now)
+                .freshnessSignature();
   const String name = deviceName();
   NimBLEDevice::init(name.c_str());
   NimBLEDevice::setMTU(247);
@@ -788,8 +790,7 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
     result["owner"] = isOwner();
     result["config_revision"] = current_.revision;
     result["resource_count"] = resources_.size();
-    result["renderer_id"] = current_.view.renderer_id;
-    result["resource_key"] = current_.view.resource_key;
+    result["page_id"] = current_.page.id;
     result["mtu"] = mtu_;
     result["free_heap"] = ESP.getFreeHeap();
     sendDocument(id, MessageKind::kResponse, response);
@@ -837,18 +838,45 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
     JsonDocument response;
     response["ok"] = true;
     JsonObject result = response["result"].to<JsonObject>();
-    JsonArray renderers = result["renderers"].to<JsonArray>();
-    for (size_t index = 0; index < renderers_.size(); ++index) {
-      IRenderer& renderer = renderers_.at(index);
-      JsonObject item = renderers.add<JsonObject>();
-      item["id"] = renderer.id();
-      item["schema_id"] = renderer.schemaId();
-      item["schema_version"] = renderer.schemaVersion();
+    JsonArray pages = result["pages"].to<JsonArray>();
+    for (size_t index = 0; index < pages_.size(); ++index) {
+      const PageManifest& manifest = pages_.at(index).manifest();
+      JsonObject item = pages.add<JsonObject>();
+      item["id"] = manifest.id;
+      item["title"] = manifest.title;
+      JsonArray slots = item["slots"].to<JsonArray>();
+      for (size_t slot_index = 0; slot_index < manifest.slot_count;
+           ++slot_index) {
+        const PageSlot& slot = manifest.slots[slot_index];
+        JsonObject slot_json = slots.add<JsonObject>();
+        slot_json["id"] = slot.id;
+        slot_json["status"] =
+            slot.status == SlotStatus::kActive ? "active" : "reserved";
+        slot_json["required"] = slot.required;
+        if (slot.status == SlotStatus::kActive) {
+          slot_json["schema_id"] = slot.schema_id;
+          slot_json["schema_version"] = slot.schema_version;
+        }
+      }
+      JsonArray timed_regions = item["timed_regions"].to<JsonArray>();
+      for (size_t region_index = 0;
+           region_index < manifest.timed_region_count; ++region_index) {
+        const TimedRegion& region = manifest.timed_regions[region_index];
+        JsonObject region_json = timed_regions.add<JsonObject>();
+        region_json["id"] = region.id;
+        region_json["interval_sec"] = region.interval_sec;
+        JsonObject bounds = region_json["bounds"].to<JsonObject>();
+        bounds["x"] = region.bounds.x;
+        bounds["y"] = region.bounds.y;
+        bounds["width"] = region.bounds.width;
+        bounds["height"] = region.bounds.height;
+      }
     }
     result["battery"] = current_.hardware.battery.enabled;
     result["io12"] = current_.hardware.io12_mode == Io12Mode::kKey;
     result["max_resources"] = 8;
     result["max_resource_payload_bytes"] = 4096;
+    result["max_page_bindings"] = kMaxPageBindings;
     sendDocument(id, MessageKind::kResponse, response);
     return;
   }
@@ -864,6 +892,10 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
     DeviceConfig candidate = staged_;
     String error;
     if (!applyConfigPatch(args["patch"], candidate, error)) {
+      sendError(id, "invalid_args", error);
+      return;
+    }
+    if (!validatePageSettings(candidate.page, pages_, resources_, error)) {
       sendError(id, "invalid_args", error);
       return;
     }
@@ -892,8 +924,12 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
       return;
     }
     const bool restart = configRequiresRestart(current_, staged_);
-    staged_.revision = current_.revision + 1U;
     String error;
+    if (!validatePageSettings(staged_.page, pages_, resources_, error)) {
+      sendError(id, "invalid_args", error);
+      return;
+    }
+    staged_.revision = current_.revision + 1U;
     if (!config_store_.save(staged_, error)) {
       sendError(id, "storage_error", error, true);
       return;
@@ -949,13 +985,18 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
       return;
     }
     const bool changed = result != ResourcePutResult::kUnchanged;
+    bool render_scheduled = false;
     if (changed) {
       String save_error;
       resources_.saveIfDue(static_cast<uint64_t>(time(nullptr)), false,
                            save_error);
       const String changed_key = args["resource"]["key"] | "";
-      if (changed_key == current_.view.resource_key) {
+      IPage* page = pages_.find(current_.page.id);
+      if (page != nullptr &&
+          PageResources(page->manifest(), current_.page, resources_, unixNow())
+              .usesKey(changed_key)) {
         render_requested_ = true;
+        render_scheduled = true;
       }
     }
     TOOLKIT_LOG("resource", String("put key=") +
@@ -964,56 +1005,93 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
     JsonDocument response;
     response["ok"] = true;
     response["result"]["changed"] = changed;
-    response["result"]["render_scheduled"] = render_requested_;
+    response["result"]["render_scheduled"] = render_scheduled;
     sendDocument(id, MessageKind::kResponse, response);
     return;
   }
   if (op == "resource.delete") {
     if (!requireOwner(id)) return;
+    const String key = args["key"] | "";
+    IPage* page = pages_.find(current_.page.id);
+    const bool active_binding =
+        page != nullptr &&
+        PageResources(page->manifest(), current_.page, resources_, unixNow())
+            .usesKey(key);
     String error;
-    if (!resources_.remove(args["key"] | "", error)) {
+    if (!resources_.remove(key, error)) {
       sendError(id, "not_found", error);
       return;
     }
     resources_.saveIfDue(static_cast<uint64_t>(time(nullptr)), true, error);
-    render_requested_ = true;
-    TOOLKIT_LOG("resource", String("deleted key=") + (args["key"] | ""));
+    if (active_binding) render_requested_ = true;
+    TOOLKIT_LOG("resource", String("deleted key=") + key);
     JsonDocument response;
     response["ok"] = true;
     response["result"]["deleted"] = true;
     sendDocument(id, MessageKind::kResponse, response);
     return;
   }
-  if (op == "view.get") {
+  if (op == "page.get") {
     JsonDocument response;
     response["ok"] = true;
-    response["result"]["renderer_id"] = current_.view.renderer_id;
-    response["result"]["resource_key"] = current_.view.resource_key;
+    JsonObject page = response["result"]["page"].to<JsonObject>();
+    page["id"] = current_.page.id;
+    JsonObject bindings = page["bindings"].to<JsonObject>();
+    for (size_t index = 0; index < current_.page.binding_count; ++index) {
+      bindings[current_.page.bindings[index].slot_id] =
+          current_.page.bindings[index].resource_key;
+    }
     sendDocument(id, MessageKind::kResponse, response);
     return;
   }
-  if (op == "view.set") {
+  if (op == "page.set") {
     if (!requireOwner(id)) return;
-    const String renderer_id = args["renderer_id"] | "";
-    const String resource_key = args["resource_key"] | "";
-    IRenderer* renderer = renderers_.find(renderer_id);
-    const ResourceRecord* resource = resources_.get(resource_key);
-    if (renderer == nullptr || (resource != nullptr && !renderer->accepts(*resource))) {
-      sendError(id, "invalid_args", "renderer or resource schema is unsupported");
+    if (!args["page"].is<JsonObjectConst>()) {
+      sendError(id, "invalid_args", "page must be an object");
       return;
     }
-    current_.view.renderer_id = renderer_id;
-    current_.view.resource_key = resource_key;
-    current_.revision += 1U;
-    staged_ = current_;
+    JsonObjectConst page_json = args["page"].as<JsonObjectConst>();
+    if (!page_json["id"].is<const char*>() ||
+        !page_json["bindings"].is<JsonObjectConst>()) {
+      sendError(id, "invalid_args", "page.id and page.bindings are required");
+      return;
+    }
+    PageSettings settings;
+    settings.id = page_json["id"].as<const char*>();
+    settings.binding_count = 0;
+    for (JsonPairConst pair : page_json["bindings"].as<JsonObjectConst>()) {
+      if (settings.binding_count >= kMaxPageBindings ||
+          !pair.value().is<const char*>()) {
+        sendError(id, "invalid_args", "page bindings are invalid or exceed 8");
+        return;
+      }
+      PageBinding& binding = settings.bindings[settings.binding_count++];
+      binding.slot_id = pair.key().c_str();
+      binding.resource_key = pair.value().as<const char*>();
+    }
+    DeviceConfig candidate = current_;
+    candidate.page = settings;
     String error;
-    if (!config_store_.save(current_, error)) {
+    if (!validateConfig(candidate, error) ||
+        !validatePageSettings(settings, pages_, resources_, error)) {
+      sendError(id, "invalid_args", error);
+      return;
+    }
+    candidate.revision += 1U;
+    if (!config_store_.save(candidate, error)) {
       sendError(id, "storage_error", error, true);
       return;
     }
+    current_ = candidate;
+    staged_ = current_;
     render_requested_ = true;
-    TOOLKIT_LOG("view", String("selected renderer=") + renderer_id +
-                            " resource=" + resource_key);
+    IPage* page = pages_.find(current_.page.id);
+    page_freshness_signature_ =
+        page == nullptr
+            ? 0
+            : PageResources(page->manifest(), current_.page, resources_, unixNow())
+                  .freshnessSignature();
+    TOOLKIT_LOG("page", String("selected page=") + current_.page.id);
     JsonDocument response;
     response["ok"] = true;
     response["result"]["revision"] = current_.revision;
@@ -1196,16 +1274,17 @@ void BleProtocolService::loop() {
       sleep_requested_ = true;
     }
   }
-  const ResourceRecord* selected = resources_.get(current_.view.resource_key);
   const uint64_t now = unixNow();
-  const bool stale = selected != nullptr && selected->ttl_sec > 0 &&
-                     now > selected->updated_at &&
-                     now - selected->updated_at > selected->ttl_sec;
-  if (stale != selected_resource_stale_) {
-    selected_resource_stale_ = stale;
+  IPage* page = pages_.find(current_.page.id);
+  const uint32_t signature =
+      page == nullptr
+          ? 0
+          : PageResources(page->manifest(), current_.page, resources_, now)
+                .freshnessSignature();
+  if (signature != page_freshness_signature_) {
+    page_freshness_signature_ = signature;
     render_requested_ = true;
-    TOOLKIT_LOG("resource", stale ? "selected resource became stale"
-                                  : "selected resource became fresh");
+    TOOLKIT_LOG("resource", "active page resource state changed");
   }
   {
     const std::lock_guard<std::mutex> lock(rx_mutex_);

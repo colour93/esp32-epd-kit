@@ -18,13 +18,18 @@ class DisplayManager {
   DisplayManager();
 
   void begin();
-  void renderView(IRenderer& renderer, const ResourceRecord* resource,
-                  const RenderContext& context);
+  void renderPage(IPage& page, const PageContext& context,
+                  uint32_t page_identity_hash);
+  bool renderTimedRegion(IPage& page, const TimedRegion& region,
+                         const RuntimeContext& context,
+                         uint32_t page_identity_hash);
+  void renderPageDiagnostic(const String& page_id);
   void renderPairing(uint32_t passkey, bool configured, bool connected = false);
   void renderLowBattery(uint16_t millivolts, bool connected = false);
   void renderFactoryResetConfirmation(uint32_t code, bool connected = true);
   PresentResult present(const DisplaySettings& settings, bool force_full = false);
   bool oldFrameValid() const;
+  uint32_t retainedPageHash() const;
   bool lowBatteryLatched() const;
   void setLowBatteryLatched(bool latched);
 
@@ -33,8 +38,15 @@ class DisplayManager {
   static constexpr size_t kDrawBufferBytes =
       8U + hardware::kLogicalStride * kDrawLines;
 
+  struct RegionFlushTarget {
+    DisplayManager* display;
+    Rect bounds;
+  };
+
   static void flushCallback(lv_display_t* display, const lv_area_t* area,
                             uint8_t* pixel_map);
+  static void regionFlushCallback(lv_display_t* display, const lv_area_t* area,
+                                  uint8_t* pixel_map);
   static uint32_t tickCallback();
   static uint32_t frameCrc(const uint8_t* frame, size_t length);
   static void logicalToNative(const uint8_t* logical, uint8_t* native);
@@ -49,9 +61,11 @@ class DisplayManager {
   GxEPD2_213_B74 panel_;
   lv_display_t* lv_display_ = nullptr;
   uint8_t draw_buffer_[kDrawBufferBytes]{};
+  uint8_t region_draw_buffer_[kDrawBufferBytes]{};
   uint8_t frame_[hardware::kLogicalFrameBytes]{};
   uint8_t native_new_[hardware::kNativeFrameBytes]{};
   uint8_t native_old_[hardware::kNativeFrameBytes]{};
+  uint32_t pending_page_hash_ = 0;
 };
 
 }  // namespace epd
