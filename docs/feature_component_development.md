@@ -421,12 +421,12 @@ Home：
 
 - Page ID：`home`，是 v4 默认 Page；
 - required active `codex -> codex/default`；
-- reserved `feishu_project`，固定不可绑定；
-- 复用 Codex Compact Widget；
+- optional active `feishu_project -> feishu.project_card/v1`；
+- 复用 Codex Compact Widget，并编排 Feishu Project Compact Widget；
 - `clock` timed region 为 `{8,0,234,30}` / 60 秒；
-- 时钟只读 `RuntimeContext`，飞书固定显示“未配置”。
+- 时钟只读 `RuntimeContext`；飞书 slot 未绑定或资源缺失时显示稳定等待态。
 
-这说明 Page 与 Producer 不是一一对应：Home 现在组合时钟、Codex 与预留区，未来可以再组合飞书 active slot，而 Codex 完整页继续复用同一个 Resource/Model。
+这说明 Page 与 Producer 不是一一对应：Home 同时组合时钟、Codex 和飞书资源，而 Codex 完整页继续复用同一个 Resource/Model。
 
 ## 13. 错误与降级
 

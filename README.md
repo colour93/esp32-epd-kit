@@ -11,7 +11,7 @@ ESP32 不连接 Wi-Fi 或云服务，也不保存 Codex、飞书或其他服务�
 
 ## 当前功能
 
-- 默认 `home` Page：每分钟时钟、Codex Compact Widget、飞书未配置预留区；
+- 默认 `home` Page：每分钟时钟、Codex Compact Widget、可选飞书项目卡片；
 - `codex.usage` Page：Codex 完整额度页；
 - fixed-capacity `PageRegistry` 与严格 Page/Slot/Binding 校验；
 - Resource missing/invalid/stale/fresh 状态；
@@ -69,5 +69,5 @@ Factory reset 清除 v4 配置、资源、安全状态和全部 BLE bonds。GPIO
 - [BLE Protocol v4 Host Implementation Guide](docs/ble_protocol_v4.md)
 - [功能组件开发规范](docs/feature_component_development.md)
 - [Codex Rate Limits Schema 与 Producer](docs/openai_codex_usage.md)
-- [飞书项目扩展方向](docs/feishu_project.md)
+- [飞书项目卡片 Schema 与 Producer](docs/feishu_project.md)
 - [Desktop Agent 与 Web 工作台](../esp32-epd-kit-web/README.md)

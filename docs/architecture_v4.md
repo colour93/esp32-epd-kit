@@ -148,10 +148,11 @@ v4 使用独立标识：
 
 ## 7. 当前参考实现
 
-- `home`：默认 Page，组合时钟、Codex Compact Widget 和不可绑定的飞书预留区；
+- `home`：默认 Page，组合时钟、Codex Compact Widget 和可选飞书项目卡片；
 - `codex.usage`：Codex 完整 Page；
 - `codex.rate_limits/v1`：两个 Page 共享的语义 Resource；
-- `codex.usage` Producer：当前唯一 Producer，读取本机 Codex app-server；
-- 飞书：本版只保留 reserved slot，不定义 schema 或 Producer。
+- `codex.usage` Producer：读取本机 Codex app-server；
+- `feishu.project_card/v1`：Home 的 optional active slot；
+- `feishu.project` Producer：执行用户配置的 Meegle CLI 命令并用 JMESPath 投影卡片字段。
 
 新增功能应从 schema 和 Producer/Page 边界开始，完整步骤见 [功能组件开发规范](feature_component_development.md)。

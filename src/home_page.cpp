@@ -3,6 +3,7 @@
 #include <time.h>
 
 #include "toolkit/codex_usage_app.h"
+#include "toolkit/feishu_project_app.h"
 #include "toolkit/ui_fonts.h"
 
 namespace epd {
@@ -10,7 +11,7 @@ namespace {
 
 const PageSlot kSlots[] = {
     {"codex", "codex.rate_limits", 1, true, SlotStatus::kActive},
-    {"feishu_project", nullptr, 0, false, SlotStatus::kReserved},
+    {"feishu_project", "feishu.project_card", 1, false, SlotStatus::kActive},
 };
 const TimedRegion kRegions[] = {
     {"clock", {8, 0, 234, 30}, 60},
@@ -76,10 +77,9 @@ void HomePage::buildUi(lv_obj_t* root, const PageContext& context) {
   CodexUsageCompactWidget::build(
       root, {8, 34, 234, 49},
       CodexUsageModel::fromSlot(context.resources.get("codex"), context.runtime));
-  label(root, "飞书项目", 8, 90, &ui_font_zh_14);
-  lv_obj_t* reserved = label(root, "未配置", 0, 90, &ui_font_zh_14);
-  lv_obj_align(reserved, LV_ALIGN_TOP_RIGHT, -8, 90);
-  rule(root, 8, 119, 234);
+  FeishuProjectCompactWidget::build(
+      root, {8, 86, 234, 34},
+      FeishuProjectModel::fromSlot(context.resources.get("feishu_project")));
 }
 
 void HomePage::buildTimedRegion(const char* id, lv_obj_t* root,

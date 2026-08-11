@@ -215,8 +215,10 @@ Config 使用 `epd_cfg4` 双槽、CRC 和 active marker；资源快照使用 `ep
     },
     {
       "id": "feishu_project",
-      "status": "reserved",
-      "required": false
+      "status": "active",
+      "required": false,
+      "schema_id": "feishu.project_card",
+      "schema_version": 1
     }
   ],
   "timed_regions": [
