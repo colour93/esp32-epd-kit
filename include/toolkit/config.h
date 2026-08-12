@@ -8,6 +8,7 @@ namespace epd {
 constexpr uint16_t kConfigSchemaVersion = 4;
 constexpr size_t kMaxPageBindings = 8;
 constexpr size_t kSlotIdMaxBytes = 32;
+constexpr size_t kWidgetIdMaxBytes = 64;
 constexpr size_t kPageIdMaxBytes = 64;
 constexpr size_t kResourceKeyMaxBytes = 64;
 
@@ -45,12 +46,14 @@ struct DisplaySettings {
 
 struct PageBinding {
   String slot_id;
+  String widget_id;
   String resource_key;
 };
 
 struct PageSettings {
   String id = "home";
-  PageBinding bindings[kMaxPageBindings]{{"codex", "codex/default"}};
+  PageBinding bindings[kMaxPageBindings]{
+      {"codex", "codex.usage.compact", "codex/default"}};
   size_t binding_count = 1;
 
   const PageBinding* findBinding(const String& slot_id) const {

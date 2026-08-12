@@ -131,12 +131,12 @@ epd::PresentResult renderCurrent(bool force_full) {
 }
 
 bool renderTimedRegion(const epd::DeviceConfig& config,
-                       int16_t utc_offset_minutes) {
+                       int16_t utc_offset_minutes, bool connected) {
   epd::IPage* page = g_pages.find(config.page.id);
   if (page == nullptr || page->manifest().timed_region_count == 0) return false;
   const epd::TimedRegion& region = page->manifest().timed_regions[0];
   const epd::RuntimeContext runtime =
-      runtimeContext(config, utc_offset_minutes, false);
+      runtimeContext(config, utc_offset_minutes, connected);
   return g_display.renderTimedRegion(*page, region, runtime,
                                      epd::pageIdentityHash(config.page));
 }
@@ -192,7 +192,9 @@ bool tryBatteryTimedFastPath(const epd::DeviceConfig& config) {
   epd::IPage* page = g_pages.find(config.page.id);
   if (page == nullptr || page->manifest().timed_region_count == 0) return false;
   const epd::TimedRegion& region = page->manifest().timed_regions[0];
-  if (!renderTimedRegion(config, g_rtc_power.utc_offset_minutes)) return false;
+  if (!renderTimedRegion(config, g_rtc_power.utc_offset_minutes, false)) {
+    return false;
+  }
   const epd::PresentResult result = g_display.present(config.display);
   g_rtc_power.next_page_tick_at = nextBoundary(now, region.interval_sec);
   TOOLKIT_LOG("power", String("clock-only wake result=") +
@@ -270,7 +272,8 @@ void handleMainsPageTick() {
     return;
   }
   if (now < g_next_mains_page_tick) return;
-  if (renderTimedRegion(config, g_ble.utcOffsetMinutes())) {
+  if (renderTimedRegion(config, g_ble.utcOffsetMinutes(),
+                        g_ble.sessionReady())) {
     g_display.present(config.display);
   } else {
     renderCurrent(false);

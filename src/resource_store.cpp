@@ -35,6 +35,7 @@ uint32_t ResourceStore::contentCrc(const ResourceRecord& record) {
   JsonDocument document;
   JsonObject root = document.to<JsonObject>();
   toJson(record, root, true);
+  root.remove("content_crc");
   std::string encoded;
   serializeMsgPack(document, encoded);
   return crc32(reinterpret_cast<const uint8_t*>(encoded.data()), encoded.size());
@@ -79,7 +80,7 @@ bool ResourceStore::parseRecord(JsonVariantConst value, ResourceRecord& out,
   std::string payload;
   serializeMsgPack(value["payload"], payload);
   if (payload.size() > kMaxPayloadBytes) {
-    error = "resource payload exceeds 4096 bytes";
+    error = "resource payload exceeds 2048 bytes";
     return false;
   }
   out.payload.set(value["payload"]);
@@ -109,8 +110,10 @@ ResourcePutResult ResourceStore::put(JsonVariantConst value, String& error) {
       error = "resource revision was reused with different content";
       return ResourcePutResult::kConflict;
     }
+    dirty_ = dirty_ ||
+             existing->persistence == ResourcePersistence::kSnapshot ||
+             candidate.persistence == ResourcePersistence::kSnapshot;
     *existing = candidate;
-    dirty_ = dirty_ || candidate.persistence == ResourcePersistence::kSnapshot;
     TOOLKIT_LOG("resource", String("updated key=") + candidate.key +
                                 " revision=" + candidate.revision);
     return ResourcePutResult::kUpdated;
@@ -177,15 +180,35 @@ bool ResourceStore::load(String& error) {
     TOOLKIT_LOG("resource", error);
     return false;
   }
-  const String snapshot = preferences.getString("snapshot", "");
+  std::vector<uint8_t> snapshot;
+  bool legacy_json = false;
+  if (preferences.getType("snapshot5") == PT_BLOB) {
+    const size_t length = preferences.getBytesLength("snapshot5");
+    if (length > 0 && length <= kMaxSnapshotBytes) {
+      snapshot.resize(length);
+      if (preferences.getBytes("snapshot5", snapshot.data(), snapshot.size()) !=
+          snapshot.size()) {
+        snapshot.clear();
+      }
+    }
+  } else if (preferences.getType("snapshot") == PT_STR) {
+    const String encoded = preferences.getString("snapshot", "");
+    snapshot.assign(reinterpret_cast<const uint8_t*>(encoded.c_str()),
+                    reinterpret_cast<const uint8_t*>(encoded.c_str()) +
+                        encoded.length());
+    legacy_json = !snapshot.empty();
+  }
   last_saved_at_ = preferences.getULong64("stored_at", 0);
   preferences.end();
-  if (snapshot.isEmpty()) {
+  if (snapshot.empty()) {
     TOOLKIT_LOG("resource", "no stored snapshot");
     return true;
   }
   JsonDocument document;
-  if (deserializeJson(document, snapshot) != DeserializationError::Ok ||
+  const DeserializationError decoded =
+      legacy_json ? deserializeJson(document, snapshot.data(), snapshot.size())
+                  : deserializeMsgPack(document, snapshot.data(), snapshot.size());
+  if (decoded != DeserializationError::Ok ||
       !document["resources"].is<JsonArrayConst>()) {
     error = "resource snapshot is invalid";
     TOOLKIT_LOG("resource", error);
@@ -197,29 +220,40 @@ bool ResourceStore::load(String& error) {
     String parse_error;
     if (!parseRecord(value, record, parse_error)) continue;
     record.persistence = ResourcePersistence::kSnapshot;
+    record.content_crc = contentCrc(record);
     records_.push_back(record);
   }
-  dirty_ = false;
+  dirty_ = legacy_json;
+  if (legacy_json) last_saved_at_ = 0;
   TOOLKIT_LOG("resource", String("loaded count=") + records_.size());
   return true;
 }
 
 bool ResourceStore::saveIfDue(uint64_t now, bool force, String& error) {
   if (!dirty_) return true;
+  const uint32_t attempt_ms = millis();
+  if (!force && last_save_attempt_ms_ != 0 &&
+      attempt_ms - last_save_attempt_ms_ < kFailedWriteRetryMs) {
+    return true;
+  }
   if (!force && last_saved_at_ > 0 && now >= last_saved_at_ &&
       now - last_saved_at_ < kMinWriteIntervalSec) {
     return true;
   }
+  last_save_attempt_ms_ = attempt_ms;
   JsonDocument document;
   JsonArray resources = document["resources"].to<JsonArray>();
   for (const ResourceRecord& record : records_) {
     if (record.persistence != ResourcePersistence::kSnapshot) continue;
-    toJson(record, resources.add<JsonObject>(), true);
+    JsonObject stored = resources.add<JsonObject>();
+    toJson(record, stored, true);
+    stored.remove("persistence");
+    stored.remove("content_crc");
   }
-  String snapshot;
-  serializeJson(document, snapshot);
-  if (snapshot.length() > kMaxSnapshotBytes) {
-    error = "resource snapshot exceeds 16384 bytes";
+  std::string snapshot;
+  serializeMsgPack(document, snapshot);
+  if (snapshot.size() > kMaxSnapshotBytes) {
+    error = "resource snapshot exceeds 4096 bytes";
     TOOLKIT_LOG("resource", error);
     return false;
   }
@@ -229,8 +263,13 @@ bool ResourceStore::saveIfDue(uint64_t now, bool force, String& error) {
     TOOLKIT_LOG("resource", error);
     return false;
   }
-  const bool ok = preferences.putString("snapshot", snapshot) == snapshot.length() &&
-                  preferences.putULong64("stored_at", now) == sizeof(uint64_t);
+  const bool ok =
+      preferences.putBytes("snapshot5", snapshot.data(), snapshot.size()) ==
+          snapshot.size() &&
+      preferences.putULong64("stored_at", now) == sizeof(uint64_t);
+  if (ok && preferences.getType("snapshot") == PT_STR) {
+    preferences.remove("snapshot");
+  }
   preferences.end();
   if (!ok) {
     error = "cannot write resource snapshot";
@@ -238,8 +277,10 @@ bool ResourceStore::saveIfDue(uint64_t now, bool force, String& error) {
     return false;
   }
   last_saved_at_ = now;
+  last_save_attempt_ms_ = 0;
   dirty_ = false;
-  TOOLKIT_LOG("resource", String("snapshot saved count=") + records_.size());
+  TOOLKIT_LOG("resource", String("MessagePack snapshot saved count=") +
+                              records_.size() + " bytes=" + snapshot.size());
   return true;
 }
 

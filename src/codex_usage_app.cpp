@@ -7,8 +7,11 @@
 namespace epd {
 namespace {
 
+const PageWidget kWidgets[] = {
+    {"codex.usage.full", "Codex 额度", "codex.rate_limits", 1},
+};
 const PageSlot kSlots[] = {
-    {"codex", "codex.rate_limits", 1, true, SlotStatus::kActive},
+    {"codex", "页面内容", kWidgets, 1, true, SlotStatus::kActive},
 };
 const PageManifest kManifest{"codex.usage", "Codex Usage", kSlots, 1,
                              nullptr, 0};
@@ -41,6 +44,41 @@ void rule(lv_obj_t* parent, int16_t x, int16_t y, int16_t width) {
   lv_obj_set_style_bg_color(object, lv_color_black(), 0);
   lv_obj_set_style_border_width(object, 0, 0);
   lv_obj_set_style_pad_all(object, 0, 0);
+}
+
+void verticalRule(lv_obj_t* parent, int16_t x, int16_t y, int16_t height) {
+  lv_obj_t* object = lv_obj_create(parent);
+  lv_obj_set_pos(object, x, y);
+  lv_obj_set_size(object, 1, height);
+  lv_obj_set_style_bg_color(object, lv_color_black(), 0);
+  lv_obj_set_style_border_width(object, 0, 0);
+  lv_obj_set_style_pad_all(object, 0, 0);
+}
+
+void titleBand(lv_obj_t* parent, const String& text, int16_t width) {
+  lv_obj_t* background = lv_obj_create(parent);
+  lv_obj_set_pos(background, 0, 0);
+  lv_obj_set_size(background, width, 20);
+  lv_obj_set_style_bg_color(background, lv_color_black(), 0);
+  lv_obj_set_style_border_width(background, 0, 0);
+  lv_obj_set_style_radius(background, 0, 0);
+  lv_obj_set_style_pad_all(background, 0, 0);
+  lv_obj_clear_flag(background, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* title = label(background, text.c_str(), 7, 1, &ui_font_zh_14);
+  lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(title, width - 14);
+  lv_obj_set_style_text_color(title, lv_color_white(), 0);
+}
+
+lv_obj_t* boundedLabel(lv_obj_t* parent, const String& text, int16_t x,
+                       int16_t y, int16_t width, lv_text_align_t align,
+                       const lv_font_t* font) {
+  lv_obj_t* object = label(parent, text.c_str(), x, y, font);
+  lv_label_set_long_mode(object, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(object, width);
+  lv_obj_set_style_text_align(object, align, 0);
+  return object;
 }
 
 void progress(lv_obj_t* parent, int16_t x, int16_t y, int16_t width,
@@ -173,7 +211,6 @@ CodexUsageModel CodexUsageModel::fromSlot(const SlotResource& slot,
   }
   model.usage.updated_at = resource.updated_at;
   model.usage.plan_type = payload["plan_type"] | "--";
-  model.usage.limit_reached = payload["limit_reached"] | false;
   JsonVariantConst selected = payload["selected"];
   if (!selected.is<JsonObjectConst>()) {
     if (model.usage.status == SyncStatus::kFresh) {
@@ -181,9 +218,40 @@ CodexUsageModel CodexUsageModel::fromSlot(const SlotResource& slot,
     }
     return model;
   }
-  model.usage.limit_name = selected["limit_name"] | "Codex";
-  model.usage.primary = parseWindow(selected["primary"]);
-  model.usage.secondary = parseWindow(selected["secondary"]);
+  const RateLimitWindow first = parseWindow(selected["primary"]);
+  const RateLimitWindow second = parseWindow(selected["secondary"]);
+  bool first_used = false;
+  bool second_used = false;
+  if (first.window_duration_mins == 5U * 60U) {
+    model.usage.primary = first;
+    first_used = true;
+  } else if (second.window_duration_mins == 5U * 60U) {
+    model.usage.primary = second;
+    second_used = true;
+  }
+  if (first.window_duration_mins == 7U * 24U * 60U) {
+    model.usage.secondary = first;
+    first_used = true;
+  } else if (second.window_duration_mins == 7U * 24U * 60U) {
+    model.usage.secondary = second;
+    second_used = true;
+  }
+  if (!model.usage.primary.present) {
+    if (!first_used && first.present) {
+      model.usage.primary = first;
+      first_used = true;
+    } else if (!second_used) {
+      model.usage.primary = second;
+      second_used = true;
+    }
+  }
+  if (!model.usage.secondary.present) {
+    if (!first_used) {
+      model.usage.secondary = first;
+    } else if (!second_used) {
+      model.usage.secondary = second;
+    }
+  }
   model.usage.has_data =
       model.usage.primary.present || model.usage.secondary.present;
   if (!model.usage.has_data && model.usage.status == SyncStatus::kFresh) {
@@ -249,23 +317,22 @@ void CodexUsageFullWidget::build(lv_obj_t* parent, const Rect& bounds,
 void CodexUsageCompactWidget::build(lv_obj_t* parent, const Rect& bounds,
                                     const CodexUsageModel& model) {
   lv_obj_t* root = surface(parent, bounds);
-  label(root, "Codex", 0, 0, &lv_font_montserrat_16);
   const String plan = planName(model.usage.plan_type);
-  label(root, plan.c_str(), 56, 2, &lv_font_montserrat_12);
+  titleBand(root, plan, bounds.width);
+
   const String primary = model.usage.primary.present
-                             ? String(model.usage.primary.remainingPercent()) + "%"
+                             ? String(model.usage.primary.remainingPercent())
                              : "--";
   const String secondary = model.usage.secondary.present
-                               ? String(model.usage.secondary.remainingPercent()) + "%"
+                               ? String(model.usage.secondary.remainingPercent())
                                : "--";
-  char value[32];
-  snprintf(value, sizeof(value), "5h %s   7d %s", primary.c_str(),
-           secondary.c_str());
-  label(root, value, 0, 22, &lv_font_montserrat_16);
-  lv_obj_t* status = label(root, statusText(model.usage.status), 0, 24,
-                           &ui_font_zh_14);
-  lv_obj_align(status, LV_ALIGN_TOP_RIGHT, 0, 24);
-  rule(root, 0, bounds.height - 1, bounds.width);
+  label(root, "5h", 3, 29, &lv_font_montserrat_12);
+  boundedLabel(root, primary, 3, 43, 46, LV_TEXT_ALIGN_LEFT,
+               &lv_font_montserrat_20);
+  verticalRule(root, 54, 28, 40);
+  label(root, "7d", 62, 29, &lv_font_montserrat_12);
+  boundedLabel(root, secondary, 62, 43, 44, LV_TEXT_ALIGN_LEFT,
+               &lv_font_montserrat_20);
 }
 
 const PageManifest& CodexUsagePage::manifest() const { return kManifest; }

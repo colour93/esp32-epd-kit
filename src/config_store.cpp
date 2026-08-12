@@ -1,6 +1,7 @@
 #include "toolkit/config_store.h"
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "toolkit/core_logic.h"
@@ -23,7 +24,8 @@ ConfigStore::SlotData ConfigStore::readSlot(Preferences& preferences,
                                             const char* key) {
   SlotData slot;
   const size_t length = preferences.getBytesLength(key);
-  if (length < sizeof(SlotHeader) || length > sizeof(SlotHeader) + kMaxPayloadBytes) {
+  if (length < sizeof(SlotHeader) ||
+      length > sizeof(SlotHeader) + kLegacyMaxPayloadBytes) {
     return slot;
   }
 
@@ -32,15 +34,17 @@ ConfigStore::SlotData ConfigStore::readSlot(Preferences& preferences,
 
   SlotHeader header{};
   memcpy(&header, bytes.data(), sizeof(header));
-  if (header.magic != kSlotMagic || header.schema != kConfigSchemaVersion ||
+  if ((header.magic != kSlotMagic && header.magic != kLegacySlotMagic) ||
+      header.schema != kConfigSchemaVersion ||
+      (header.magic == kSlotMagic && header.payload_length > kMaxPayloadBytes) ||
       header.payload_length != length - sizeof(header)) {
     return slot;
   }
   const uint8_t* payload = bytes.data() + sizeof(header);
   if (crc32(payload, header.payload_length) != header.crc32) return slot;
 
-  slot.payload.reserve(header.payload_length + 1);
-  slot.payload.concat(reinterpret_cast<const char*>(payload), header.payload_length);
+  slot.payload.assign(payload, payload + header.payload_length);
+  slot.msgpack = header.magic == kSlotMagic;
   slot.sequence = header.sequence;
   slot.valid = true;
   return slot;
@@ -72,8 +76,14 @@ bool ConfigStore::load(DeviceConfig& config) {
   }
 
   JsonDocument document;
-  if (deserializeJson(document, selected->payload) != DeserializationError::Ok) {
-    TOOLKIT_LOG("config", "config JSON decode failed");
+  const DeserializationError decoded =
+      selected->msgpack
+          ? deserializeMsgPack(document, selected->payload.data(),
+                               selected->payload.size())
+          : deserializeJson(document, selected->payload.data(),
+                            selected->payload.size());
+  if (decoded != DeserializationError::Ok) {
+    TOOLKIT_LOG("config", "config snapshot decode failed");
     return false;
   }
   String error;
@@ -82,6 +92,15 @@ bool ConfigStore::load(DeviceConfig& config) {
     return false;
   }
   TOOLKIT_LOG("config", String("loaded revision=") + config.revision);
+  if (!selected->msgpack) {
+    String migration_error;
+    if (!save(config, migration_error) || !save(config, migration_error)) {
+      TOOLKIT_LOG("config", String("MessagePack migration failed: ") +
+                                migration_error);
+    } else {
+      TOOLKIT_LOG("config", "migrated both config slots to MessagePack");
+    }
+  }
   return true;
 }
 
@@ -93,9 +112,9 @@ bool ConfigStore::save(const DeviceConfig& config, String& error) {
 
   JsonDocument document;
   configToJson(config, document.to<JsonObject>());
-  String payload;
-  serializeJson(document, payload);
-  if (payload.length() > kMaxPayloadBytes) {
+  std::string payload;
+  serializeMsgPack(document, payload);
+  if (payload.size() > kMaxPayloadBytes) {
     error = "serialized config is too large";
     TOOLKIT_LOG("config", error);
     return false;
@@ -115,12 +134,12 @@ bool ConfigStore::save(const DeviceConfig& config, String& error) {
   const uint32_t sequence = std::max(a.sequence, b.sequence) + 1U;
 
   SlotHeader header{kSlotMagic, kConfigSchemaVersion, 0, sequence,
-                    static_cast<uint32_t>(payload.length()),
-                    crc32(reinterpret_cast<const uint8_t*>(payload.c_str()),
-                          payload.length())};
-  std::vector<uint8_t> bytes(sizeof(header) + payload.length());
+                    static_cast<uint32_t>(payload.size()),
+                    crc32(reinterpret_cast<const uint8_t*>(payload.data()),
+                          payload.size())};
+  std::vector<uint8_t> bytes(sizeof(header) + payload.size());
   memcpy(bytes.data(), &header, sizeof(header));
-  memcpy(bytes.data() + sizeof(header), payload.c_str(), payload.length());
+  memcpy(bytes.data() + sizeof(header), payload.data(), payload.size());
 
   if (preferences.putBytes(next_key, bytes.data(), bytes.size()) != bytes.size()) {
     preferences.end();

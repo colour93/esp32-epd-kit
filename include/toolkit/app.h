@@ -14,10 +14,18 @@ using Rect = core::Rect;
 enum class SlotStatus : uint8_t { kActive, kReserved };
 enum class ResourceState : uint8_t { kMissing, kInvalid, kStale, kFresh };
 
-struct PageSlot {
+struct PageWidget {
   const char* id;
+  const char* title;
   const char* schema_id;
   uint16_t schema_version;
+};
+
+struct PageSlot {
+  const char* id;
+  const char* title;
+  const PageWidget* widgets;
+  size_t widget_count;
   bool required;
   SlotStatus status;
 };
@@ -47,6 +55,7 @@ struct RuntimeContext {
 
 struct SlotResource {
   const PageSlot* slot = nullptr;
+  const PageWidget* widget = nullptr;
   const char* resource_key = nullptr;
   const ResourceRecord* resource = nullptr;
   ResourceState state = ResourceState::kMissing;
@@ -98,6 +107,7 @@ class PageRegistry {
 };
 
 const PageSlot* findPageSlot(const PageManifest& manifest, const String& id);
+const PageWidget* findPageWidget(const PageSlot& slot, const String& id);
 const TimedRegion* findTimedRegion(const PageManifest& manifest,
                                   const String& id);
 bool validatePageSettings(const PageSettings& settings,

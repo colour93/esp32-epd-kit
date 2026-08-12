@@ -39,6 +39,13 @@ const PageSlot* findPageSlot(const PageManifest& manifest, const String& id) {
   return nullptr;
 }
 
+const PageWidget* findPageWidget(const PageSlot& slot, const String& id) {
+  for (size_t index = 0; index < slot.widget_count; ++index) {
+    if (id == slot.widgets[index].id) return &slot.widgets[index];
+  }
+  return nullptr;
+}
+
 const TimedRegion* findTimedRegion(const PageManifest& manifest,
                                   const String& id) {
   for (size_t index = 0; index < manifest.timed_region_count; ++index) {
@@ -57,11 +64,20 @@ SlotResource PageResources::get(const char* slot_id) const {
   }
   const PageBinding* binding = settings_.findBinding(slot_id);
   if (binding == nullptr) return resolved;
+  resolved.widget = binding->widget_id.isEmpty()
+                        ? (resolved.slot->widget_count > 0
+                               ? &resolved.slot->widgets[0]
+                               : nullptr)
+                        : findPageWidget(*resolved.slot, binding->widget_id);
   resolved.resource_key = binding->resource_key.c_str();
   resolved.resource = resources_.get(binding->resource_key);
-  if (resolved.resource == nullptr) return resolved;
-  if (resolved.resource->schema_id != resolved.slot->schema_id ||
-      resolved.resource->schema_version != resolved.slot->schema_version) {
+  if (resolved.widget == nullptr) {
+    resolved.state = ResourceState::kInvalid;
+  } else if (resolved.resource == nullptr) {
+    return resolved;
+  } else if (resolved.resource->schema_id != resolved.widget->schema_id ||
+             resolved.resource->schema_version !=
+                 resolved.widget->schema_version) {
     resolved.state = ResourceState::kInvalid;
   } else if (stale(*resolved.resource, now_)) {
     resolved.state = ResourceState::kStale;
@@ -87,6 +103,9 @@ uint32_t PageResources::freshnessSignature() const {
     hash = hashByte(hash, static_cast<uint8_t>(resolved.state));
     if (resolved.resource_key != nullptr) {
       hash = hashText(hash, String(resolved.resource_key));
+    }
+    if (resolved.widget != nullptr) {
+      hash = hashText(hash, String(resolved.widget->id));
     }
   }
   return hash;
@@ -125,16 +144,32 @@ bool PageRegistry::add(IPage& page, String& error) {
       }
     }
     if (slot.status == SlotStatus::kActive &&
-        (!validIdentifier(slot.schema_id, kPageIdMaxBytes) ||
-         slot.schema_version == 0)) {
-      error = "active page slot schema is invalid: " + String(slot.id);
+        (!validIdentifier(slot.title, kPageIdMaxBytes) ||
+         slot.widgets == nullptr || slot.widget_count == 0)) {
+      error = "active page slot widgets are invalid: " + String(slot.id);
       return false;
     }
     if (slot.status == SlotStatus::kReserved &&
-        (slot.required || slot.schema_id != nullptr || slot.schema_version != 0)) {
-      error = "reserved page slot must not declare a schema: " +
-              String(slot.id);
+        (slot.required || slot.widgets != nullptr || slot.widget_count != 0)) {
+      error = "reserved page slot must not declare widgets: " + String(slot.id);
       return false;
+    }
+    for (size_t widget_index = 0; widget_index < slot.widget_count;
+         ++widget_index) {
+      const PageWidget& widget = slot.widgets[widget_index];
+      if (!validIdentifier(widget.id, kWidgetIdMaxBytes) ||
+          !validIdentifier(widget.title, kPageIdMaxBytes) ||
+          !validIdentifier(widget.schema_id, kPageIdMaxBytes) ||
+          widget.schema_version == 0) {
+        error = "page widget is invalid: " + String(slot.id);
+        return false;
+      }
+      for (size_t other = 0; other < widget_index; ++other) {
+        if (String(widget.id) == slot.widgets[other].id) {
+          error = "duplicate page widget: " + String(widget.id);
+          return false;
+        }
+      }
     }
   }
   for (size_t index = 0; index < manifest.timed_region_count; ++index) {
@@ -182,6 +217,14 @@ bool validatePageSettings(const PageSettings& settings,
       error = "reserved page slot cannot be bound: " + binding.slot_id;
       return false;
     }
+    const PageWidget* widget = binding.widget_id.isEmpty()
+                                   ? (slot->widget_count > 0 ? &slot->widgets[0]
+                                                           : nullptr)
+                                   : findPageWidget(*slot, binding.widget_id);
+    if (widget == nullptr) {
+      error = "unknown widget for page slot: " + binding.slot_id;
+      return false;
+    }
     for (size_t other = index + 1; other < settings.binding_count; ++other) {
       if (binding.slot_id == settings.bindings[other].slot_id) {
         error = "duplicate page binding: " + binding.slot_id;
@@ -190,8 +233,8 @@ bool validatePageSettings(const PageSettings& settings,
     }
     const ResourceRecord* resource = resources.get(binding.resource_key);
     if (resource != nullptr &&
-        (resource->schema_id != slot->schema_id ||
-         resource->schema_version != slot->schema_version)) {
+        (resource->schema_id != widget->schema_id ||
+         resource->schema_version != widget->schema_version)) {
       error = "resource schema does not match slot: " + binding.slot_id;
       return false;
     }
@@ -211,6 +254,7 @@ uint32_t pageIdentityHash(const PageSettings& settings) {
   uint32_t hash = hashText(2166136261U, settings.id);
   for (size_t index = 0; index < settings.binding_count; ++index) {
     hash = hashText(hash, settings.bindings[index].slot_id);
+    hash = hashText(hash, settings.bindings[index].widget_id);
     hash = hashText(hash, settings.bindings[index].resource_key);
   }
   return hash;

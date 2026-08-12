@@ -2,6 +2,8 @@
 
 #include <Preferences.h>
 
+#include <vector>
+
 #include "toolkit/config.h"
 
 namespace epd {
@@ -24,12 +26,15 @@ class ConfigStore {
 
   struct SlotData {
     bool valid = false;
+    bool msgpack = false;
     uint32_t sequence = 0;
-    String payload;
+    std::vector<uint8_t> payload;
   };
 
-  static constexpr uint32_t kSlotMagic = 0x43464734U;  // "CFG4"
-  static constexpr size_t kMaxPayloadBytes = 8192;
+  static constexpr uint32_t kSlotMagic = 0x43464735U;        // "CFG5"
+  static constexpr uint32_t kLegacySlotMagic = 0x43464734U;  // "CFG4"
+  static constexpr size_t kMaxPayloadBytes = 4096;
+  static constexpr size_t kLegacyMaxPayloadBytes = 8192;
 
   SlotData readSlot(Preferences& preferences, const char* key);
   static uint32_t crc32(const uint8_t* data, size_t length);

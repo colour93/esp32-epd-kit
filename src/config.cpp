@@ -96,8 +96,10 @@ bool validateConfig(const DeviceConfig& config, String& error) {
   for (size_t index = 0; index < config.page.binding_count; ++index) {
     const PageBinding& binding = config.page.bindings[index];
     if (!boundedIdentifier(binding.slot_id, kSlotIdMaxBytes) ||
+        (!binding.widget_id.isEmpty() &&
+         !boundedIdentifier(binding.widget_id, kWidgetIdMaxBytes)) ||
         !boundedIdentifier(binding.resource_key, kResourceKeyMaxBytes)) {
-      error = "invalid page slot id or resource key";
+      error = "invalid page slot, widget, or resource key";
       return false;
     }
     for (size_t other = index + 1; other < config.page.binding_count; ++other) {
@@ -143,8 +145,10 @@ void configToJson(const DeviceConfig& config, JsonObject out) {
   page["id"] = config.page.id;
   JsonObject bindings = page["bindings"].to<JsonObject>();
   for (size_t index = 0; index < config.page.binding_count; ++index) {
-    bindings[config.page.bindings[index].slot_id] =
-        config.page.bindings[index].resource_key;
+    const PageBinding& source = config.page.bindings[index];
+    JsonObject binding = bindings[source.slot_id].to<JsonObject>();
+    if (!source.widget_id.isEmpty()) binding["widget_id"] = source.widget_id;
+    binding["resource_key"] = source.resource_key;
   }
 }
 
@@ -262,14 +266,26 @@ bool applyConfigPatch(JsonVariantConst source, DeviceConfig& config,
           error = "page.bindings exceeds maximum of 8";
           return false;
         }
-        if (!pair.value().is<const char*>()) {
-          error = "page binding resource key must be a string";
-          return false;
-        }
         PageBinding& binding =
             config.page.bindings[config.page.binding_count++];
         binding.slot_id = pair.key().c_str();
-        binding.resource_key = pair.value().as<const char*>();
+        binding.widget_id = "";
+        if (pair.value().is<const char*>()) {
+          binding.resource_key = pair.value().as<const char*>();
+        } else if (pair.value().is<JsonObjectConst>()) {
+          JsonObjectConst value = pair.value().as<JsonObjectConst>();
+          if (!value["resource_key"].is<const char*>() ||
+              (!value["widget_id"].isNull() &&
+               !value["widget_id"].is<const char*>())) {
+            error = "page binding widget_id and resource_key must be strings";
+            return false;
+          }
+          binding.widget_id = value["widget_id"] | "";
+          binding.resource_key = value["resource_key"].as<const char*>();
+        } else {
+          error = "page binding must be a resource key or binding object";
+          return false;
+        }
       }
     }
   }

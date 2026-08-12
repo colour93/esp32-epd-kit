@@ -47,9 +47,10 @@ class ResourceStore {
 
  private:
   static constexpr size_t kMaxResources = 8;
-  static constexpr size_t kMaxPayloadBytes = 4096;
-  static constexpr size_t kMaxSnapshotBytes = 16384;
+  static constexpr size_t kMaxPayloadBytes = 2048;
+  static constexpr size_t kMaxSnapshotBytes = 4096;
   static constexpr uint64_t kMinWriteIntervalSec = 3600;
+  static constexpr uint32_t kFailedWriteRetryMs = 60000;
 
   static uint32_t crc32(const uint8_t* data, size_t length);
   static bool parseRecord(JsonVariantConst value, ResourceRecord& out,
@@ -58,6 +59,7 @@ class ResourceStore {
 
   std::vector<ResourceRecord> records_;
   uint64_t last_saved_at_ = 0;
+  uint32_t last_save_attempt_ms_ = 0;
   bool dirty_ = false;
 };
 

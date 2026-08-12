@@ -323,6 +323,7 @@ void BleProtocolService::onConnect(NimBLEConnInfo& connection) {
   const uint16_t connection_handle = connection.getConnHandle();
   authenticated_ = connection.isEncrypted() && connection.isAuthenticated();
   peer_address_ = "";
+  uint16_t replaced_handle = BLE_HS_CONN_HANDLE_NONE;
   {
     const std::lock_guard<std::mutex> lock(rx_mutex_);
     assembly_.clear();
@@ -330,6 +331,9 @@ void BleProtocolService::onConnect(NimBLEConnInfo& connection) {
   }
   {
     const std::lock_guard<std::mutex> lock(tx_mutex_);
+    if (connected_ && connection_handle_ != connection_handle) {
+      replaced_handle = connection_handle_;
+    }
     connected_ = true;
     advertising_restart_at_ = 0;
     connection_handle_ = connection_handle;
@@ -345,11 +349,27 @@ void BleProtocolService::onConnect(NimBLEConnInfo& connection) {
                          " encrypted=" + (connection.isEncrypted() ? "yes" : "no") +
                          " authenticated=" +
                          (connection.isAuthenticated() ? "yes" : "no"));
+  if (server_ && replaced_handle != BLE_HS_CONN_HANDLE_NONE) {
+    TOOLKIT_LOG("ble", String("replacing stale connection handle=") +
+                           replaced_handle);
+    server_->disconnect(replaced_handle);
+  }
   if (server_) server_->updateConnParams(connection_handle, 12, 24, 0, 240);
 }
 
-void BleProtocolService::onDisconnect(NimBLEConnInfo&, int reason) {
-  TOOLKIT_LOG("ble", String("disconnected reason=") + reason);
+void BleProtocolService::onDisconnect(NimBLEConnInfo& connection, int reason) {
+  const uint16_t disconnected_handle = connection.getConnHandle();
+  {
+    const std::lock_guard<std::mutex> lock(tx_mutex_);
+    if (connected_ && connection_handle_ != disconnected_handle) {
+      TOOLKIT_LOG("ble", String("ignored stale disconnect handle=") +
+                             disconnected_handle + " active=" +
+                             connection_handle_ + " reason=" + reason);
+      return;
+    }
+  }
+  TOOLKIT_LOG("ble", String("disconnected handle=") + disconnected_handle +
+                         " reason=" + reason);
   authenticated_ = false;
   peer_address_ = "";
   {
@@ -376,6 +396,10 @@ void BleProtocolService::onDisconnect(NimBLEConnInfo&, int reason) {
 }
 
 void BleProtocolService::onAuthenticationComplete(NimBLEConnInfo& connection) {
+  {
+    const std::lock_guard<std::mutex> lock(tx_mutex_);
+    if (!connected_ || connection.getConnHandle() != connection_handle_) return;
+  }
   authenticated_ = connection.isEncrypted() && connection.isAuthenticated() &&
                    connection.isBonded();
   const NimBLEAddress identity = connection.getIdAddress();
@@ -430,6 +454,10 @@ void BleProtocolService::onAuthenticationComplete(NimBLEConnInfo& connection) {
 }
 
 void BleProtocolService::onIdentity(NimBLEConnInfo& connection) {
+  {
+    const std::lock_guard<std::mutex> lock(tx_mutex_);
+    if (!connected_ || connection.getConnHandle() != connection_handle_) return;
+  }
   if (!connection.isEncrypted() || !connection.isAuthenticated()) return;
   const String identity = connection.getIdAddress().toString().c_str();
   if (!isKnownBond(identity)) return;
@@ -850,12 +878,21 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
         const PageSlot& slot = manifest.slots[slot_index];
         JsonObject slot_json = slots.add<JsonObject>();
         slot_json["id"] = slot.id;
+        if (slot.title != nullptr) slot_json["title"] = slot.title;
         slot_json["status"] =
             slot.status == SlotStatus::kActive ? "active" : "reserved";
         slot_json["required"] = slot.required;
         if (slot.status == SlotStatus::kActive) {
-          slot_json["schema_id"] = slot.schema_id;
-          slot_json["schema_version"] = slot.schema_version;
+          JsonArray widgets = slot_json["widgets"].to<JsonArray>();
+          for (size_t widget_index = 0; widget_index < slot.widget_count;
+               ++widget_index) {
+            const PageWidget& widget = slot.widgets[widget_index];
+            JsonObject widget_json = widgets.add<JsonObject>();
+            widget_json["id"] = widget.id;
+            widget_json["title"] = widget.title;
+            widget_json["schema_id"] = widget.schema_id;
+            widget_json["schema_version"] = widget.schema_version;
+          }
         }
       }
       JsonArray timed_regions = item["timed_regions"].to<JsonArray>();
@@ -875,7 +912,7 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
     result["battery"] = current_.hardware.battery.enabled;
     result["io12"] = current_.hardware.io12_mode == Io12Mode::kKey;
     result["max_resources"] = 8;
-    result["max_resource_payload_bytes"] = 4096;
+    result["max_resource_payload_bytes"] = 2048;
     result["max_page_bindings"] = kMaxPageBindings;
     sendDocument(id, MessageKind::kResponse, response);
     return;
@@ -1038,8 +1075,10 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
     page["id"] = current_.page.id;
     JsonObject bindings = page["bindings"].to<JsonObject>();
     for (size_t index = 0; index < current_.page.binding_count; ++index) {
-      bindings[current_.page.bindings[index].slot_id] =
-          current_.page.bindings[index].resource_key;
+      const PageBinding& source = current_.page.bindings[index];
+      JsonObject binding = bindings[source.slot_id].to<JsonObject>();
+      if (!source.widget_id.isEmpty()) binding["widget_id"] = source.widget_id;
+      binding["resource_key"] = source.resource_key;
     }
     sendDocument(id, MessageKind::kResponse, response);
     return;
@@ -1060,14 +1099,29 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
     settings.id = page_json["id"].as<const char*>();
     settings.binding_count = 0;
     for (JsonPairConst pair : page_json["bindings"].as<JsonObjectConst>()) {
-      if (settings.binding_count >= kMaxPageBindings ||
-          !pair.value().is<const char*>()) {
+      if (settings.binding_count >= kMaxPageBindings) {
         sendError(id, "invalid_args", "page bindings are invalid or exceed 8");
         return;
       }
       PageBinding& binding = settings.bindings[settings.binding_count++];
       binding.slot_id = pair.key().c_str();
-      binding.resource_key = pair.value().as<const char*>();
+      binding.widget_id = "";
+      if (pair.value().is<const char*>()) {
+        binding.resource_key = pair.value().as<const char*>();
+      } else if (pair.value().is<JsonObjectConst>()) {
+        JsonObjectConst value = pair.value().as<JsonObjectConst>();
+        if (!value["resource_key"].is<const char*>() ||
+            (!value["widget_id"].isNull() &&
+             !value["widget_id"].is<const char*>())) {
+          sendError(id, "invalid_args", "page binding fields are invalid");
+          return;
+        }
+        binding.widget_id = value["widget_id"] | "";
+        binding.resource_key = value["resource_key"].as<const char*>();
+      } else {
+        sendError(id, "invalid_args", "page binding must be an object");
+        return;
+      }
     }
     DeviceConfig candidate = current_;
     candidate.page = settings;

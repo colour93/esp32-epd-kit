@@ -27,9 +27,7 @@ struct RateLimitWindow {
 
 struct CodexUsageState {
   bool has_data = false;
-  bool limit_reached = false;
   String plan_type = "--";
-  String limit_name;
   SyncStatus status = SyncStatus::kWaiting;
   uint64_t updated_at = 0;
   RateLimitWindow primary;
