@@ -83,11 +83,14 @@ pio device monitor -b 115200
 
 ```text
 status
+setup
 io12 disable
 restart
 factory-reset prepare
 factory-reset confirm <code>
 ```
+
+`setup` 通过物理串口打开 120 秒新主机绑定窗口，屏幕进入配置模式，串口同时输出六位 BLE passkey。窗口期间设备保持快速广播；Windows Agent 若检测到本机残留的陈旧配对，会在首次安全握手失败后自动重新配对。
 
 Factory reset 清除 v4 配置、资源、安全状态和全部 BLE bonds。GPIO12 同时是 ESP32 boot-strapping pin；若硬件持续拉高导致设备无法启动，需先修复电路或复位时拉低 GPIO12。
 

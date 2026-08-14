@@ -54,6 +54,10 @@ class BleProtocolService {
   bool takeFactoryCode(uint32_t& code);
   bool takeSleepRequest();
   bool factoryReset(String& error);
+  bool enterSetupMode(String& error);
+  bool setupMode() const;
+  uint32_t setupRemainingSeconds() const;
+  uint32_t passkey() const { return passkey_; }
   int16_t utcOffsetMinutes() const { return utc_offset_minutes_; }
   const DeviceConfig& config() const { return current_; }
 
@@ -134,6 +138,7 @@ class BleProtocolService {
   void loadSecurityState();
   void saveOwner(const NimBLEAddress& address);
   void clearSecurityState();
+  void closeSetupMode();
   String bondId(const NimBLEAddress& address) const;
   bool findBond(const String& id, NimBLEAddress& address) const;
   String deviceName() const;
@@ -182,6 +187,7 @@ class BleProtocolService {
   std::atomic_bool connected_{false};
   std::atomic_bool authenticated_{false};
   std::atomic_bool connection_render_requested_{false};
+  std::atomic_bool setup_render_requested_{false};
   bool request_in_progress_ = false;
   bool tx_waiting_for_ack_ = false;
   uint8_t tx_send_attempts_ = 0;

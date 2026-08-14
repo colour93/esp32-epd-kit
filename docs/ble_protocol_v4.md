@@ -34,6 +34,7 @@ Manufacturer Data 使用内部 Company ID `0xffff`，其 value 为：
 | 1 bit 1 | 启用电池硬件 |
 | 1 bit 2 | IO12 key 模式 |
 | 1 bit 3 | fast advertising |
+| 1 bit 4 | setup/enrollment 窗口已打开 |
 
 主机只接受 major 4。服务 UUID 是首选匹配条件；设备名只可用于辅助恢复已保存目标，多个同名/候选设备时必须由用户选择。
 
@@ -45,6 +46,7 @@ Manufacturer Data 使用内部 Company ID `0xffff`，其 value 为：
 - owner 可开启 120 秒 enrollment，新增最多 3 个 `trusted` bond；
 - 总 bond 上限为 4；
 - enrollment 关闭时，未知 bond 会被拒绝并删除；
+- 物理串口 `setup` 可打开同样的 120 秒 enrollment 窗口，用于 owner 主机不可用时绑定新主机；
 - owner 不可直接撤销，必须先转移 owner；
 - bond ID 是设备生成的匿名 `b-xxxxxxxx`，主机不得依赖底层地址。
 

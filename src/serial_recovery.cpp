@@ -39,6 +39,7 @@ void SerialRecoveryConsole::printPrompt() const { Serial.print("epd> "); }
 void SerialRecoveryConsole::printHelp() const {
   Serial.println("Commands:");
   Serial.println("  status                         show recovery status");
+  Serial.println("  setup                          allow a new bonded device for 120s");
   Serial.println("  io12 disable                   disable IO12 and restart");
   Serial.println("  restart                        restart the device");
   Serial.println("  factory-reset prepare          create a 30-second code");
@@ -54,6 +55,13 @@ void SerialRecoveryConsole::printStatus() const {
   Serial.printf("ble_authenticated=%s\n",
                 ble_.authenticated() ? "yes" : "no");
   Serial.printf("owned=%s\n", ble_.owned() ? "yes" : "no");
+  Serial.printf("setup=%s\n", ble_.setupMode() ? "active" : "closed");
+  if (ble_.setupMode()) {
+    Serial.printf("setup_remaining_sec=%lu\n",
+                  static_cast<unsigned long>(ble_.setupRemainingSeconds()));
+    Serial.printf("pairing_passkey=%06lu\n",
+                  static_cast<unsigned long>(ble_.passkey()));
+  }
   Serial.printf("config_revision=%lu\n",
                 static_cast<unsigned long>(config.revision));
   Serial.printf("io12=%s\n",
@@ -64,6 +72,18 @@ void SerialRecoveryConsole::printStatus() const {
                                                                : "mains");
   Serial.printf("free_heap=%lu\n",
                 static_cast<unsigned long>(ESP.getFreeHeap()));
+}
+
+void SerialRecoveryConsole::enterSetup() {
+  String error;
+  if (!ble_.enterSetupMode(error)) {
+    Serial.printf("[FAIL] cannot enter setup: %s\n", error.c_str());
+    return;
+  }
+  Serial.println("[OK] setup active for 120 seconds");
+  Serial.printf("[PASSKEY] %06lu\n",
+                static_cast<unsigned long>(ble_.passkey()));
+  Serial.println("[INFO] open EPD Agent and connect the new host");
 }
 
 void SerialRecoveryConsole::restart() const {
@@ -134,6 +154,8 @@ void SerialRecoveryConsole::execute(String line) {
     printHelp();
   } else if (command == "status" && arguments.isEmpty()) {
     printStatus();
+  } else if (command == "setup" && arguments.isEmpty()) {
+    enterSetup();
   } else if (command == "restart" && arguments.isEmpty()) {
     restart();
   } else if (command == "io12" && lower_arguments == "disable") {

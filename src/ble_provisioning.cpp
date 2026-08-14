@@ -202,7 +202,8 @@ bool BleProtocolService::configureAdvertising(bool fast) {
                            (current_.hardware.io12_mode == Io12Mode::kKey
                                 ? 0x04U
                                 : 0U) |
-                           (fast ? 0x08U : 0U))};
+                           (fast ? 0x08U : 0U) |
+                           (setupMode() ? 0x10U : 0U))};
   advertising->clearData();
   advertising->enableScanResponse(true);
   if (!advertising->setName(deviceName().c_str()) ||
@@ -313,6 +314,10 @@ bool BleProtocolService::begin(const DeviceConfig& config, uint16_t battery_mv,
   active_ = true;
   TOOLKIT_LOG("ble", String("advertising started service=") + kServiceUuid);
   if (owner_address_.isEmpty()) {
+    char formatted_passkey[7];
+    snprintf(formatted_passkey, sizeof(formatted_passkey), "%06lu",
+             static_cast<unsigned long>(passkey_));
+    TOOLKIT_LOG("security", String("pairing passkey=") + formatted_passkey);
     display_.renderPairing(passkey_, false);
     display_.present(current_.display);
   }
@@ -391,7 +396,11 @@ void BleProtocolService::onDisconnect(NimBLEConnInfo& connection, int reason) {
     tx_retry_at_ = 0;
   }
   staged_ = current_;
-  connection_render_requested_ = !owner_address_.isEmpty();
+  if (setupMode()) {
+    setup_render_requested_ = true;
+  } else {
+    connection_render_requested_ = !owner_address_.isEmpty();
+  }
   TOOLKIT_LOG("ble", "advertising restart scheduled");
 }
 
@@ -406,7 +415,11 @@ void BleProtocolService::onAuthenticationComplete(NimBLEConnInfo& connection) {
   peer_address_ = identity.toString().c_str();
   const bool peer_was_known = isKnownBond(peer_address_);
   if (!authenticated_) {
-    connection_render_requested_ = !owner_address_.isEmpty();
+    if (setupMode()) {
+      setup_render_requested_ = true;
+    } else {
+      connection_render_requested_ = !owner_address_.isEmpty();
+    }
     TOOLKIT_LOG("security", "pairing authentication failed");
     if (server_) server_->disconnect(connection.getConnHandle());
     return;
@@ -419,7 +432,11 @@ void BleProtocolService::onAuthenticationComplete(NimBLEConnInfo& connection) {
       battery_awake_deadline_ = millis() + kBatteryAwakeTimeoutMs;
     }
     render_requested_ = true;
-    connection_render_requested_ = true;
+    if (setupMode()) {
+      setup_render_requested_ = true;
+    } else {
+      connection_render_requested_ = true;
+    }
     TOOLKIT_LOG("security", "first authenticated bond assigned as owner");
     return;
   }
@@ -450,7 +467,11 @@ void BleProtocolService::onAuthenticationComplete(NimBLEConnInfo& connection) {
     TOOLKIT_LOG("security", String("authenticated role=") +
                                 (isOwner() ? "owner" : "trusted"));
   }
-  connection_render_requested_ = true;
+  if (setupMode()) {
+    setup_render_requested_ = true;
+  } else {
+    connection_render_requested_ = true;
+  }
 }
 
 void BleProtocolService::onIdentity(NimBLEConnInfo& connection) {
@@ -463,7 +484,11 @@ void BleProtocolService::onIdentity(NimBLEConnInfo& connection) {
   if (!isKnownBond(identity)) return;
   peer_address_ = identity;
   authenticated_ = true;
-  connection_render_requested_ = true;
+  if (setupMode()) {
+    setup_render_requested_ = true;
+  } else {
+    connection_render_requested_ = true;
+  }
   TOOLKIT_LOG("security", String("resolved identity role=") +
                               (isOwner() ? "owner" : "trusted"));
 }
@@ -1173,14 +1198,11 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
   }
   if (op == "security.enrollment.open") {
     if (!requireOwner(id)) return;
-    if (NimBLEDevice::getNumBonds() >= 4) {
-      sendError(id, "conflict", "bond limit has been reached");
+    String error;
+    if (!enterSetupMode(error)) {
+      sendError(id, "conflict", error);
       return;
     }
-    enrollment_deadline_ = millis() + kEnrollmentWindowMs;
-    TOOLKIT_LOG("security", "enrollment opened for 120s");
-    display_.renderPairing(passkey_, true, sessionReady());
-    display_.present(current_.display);
     JsonDocument response;
     response["ok"] = true;
     response["result"]["expires_in_sec"] = 120;
@@ -1189,7 +1211,7 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
   }
   if (op == "security.enrollment.close") {
     if (!requireOwner(id)) return;
-    enrollment_deadline_ = 0;
+    closeSetupMode();
     TOOLKIT_LOG("security", "enrollment closed");
     JsonDocument response;
     response["ok"] = true;
@@ -1282,6 +1304,78 @@ bool BleProtocolService::factoryReset(String& error) {
   return true;
 }
 
+bool BleProtocolService::setupMode() const {
+  return enrollment_deadline_ != 0 &&
+         !deadlineReached(enrollment_deadline_);
+}
+
+uint32_t BleProtocolService::setupRemainingSeconds() const {
+  if (!setupMode()) return 0;
+  const uint32_t remaining = enrollment_deadline_ - millis();
+  return (remaining + 999U) / 1000U;
+}
+
+bool BleProtocolService::enterSetupMode(String& error) {
+  error = "";
+  if (!active_) {
+    error = "BLE service is not active";
+    return false;
+  }
+  if (NimBLEDevice::getNumBonds() >= 4) {
+    error = "bond limit has been reached";
+    return false;
+  }
+
+  enrollment_deadline_ = millis() + kEnrollmentWindowMs;
+  fast_advertising_deadline_ = enrollment_deadline_;
+  setup_render_requested_ = true;
+  {
+    const std::lock_guard<std::mutex> lock(tx_mutex_);
+    battery_awake_deadline_ = enrollment_deadline_;
+    sleep_requested_ = false;
+  }
+
+  char formatted_passkey[7];
+  snprintf(formatted_passkey, sizeof(formatted_passkey), "%06lu",
+           static_cast<unsigned long>(passkey_));
+  TOOLKIT_LOG("security", String("setup opened for 120s passkey=") +
+                              formatted_passkey);
+
+  if (!connected_) {
+    NimBLEDevice::stopAdvertising();
+    if (!configureAdvertising(true) || !NimBLEDevice::startAdvertising()) {
+      const std::lock_guard<std::mutex> lock(tx_mutex_);
+      advertising_restart_at_ = millis() + kAdvertisingRetryDelayMs;
+      TOOLKIT_LOG("ble", "setup advertising refresh failed; retry scheduled");
+    } else {
+      TOOLKIT_LOG("ble", "setup fast advertising active");
+    }
+  } else if (!authenticated_ && server_) {
+    server_->disconnect(connection_handle_);
+  }
+  return true;
+}
+
+void BleProtocolService::closeSetupMode() {
+  enrollment_deadline_ = 0;
+  if (current_.power.profile == PowerProfile::kBattery) {
+    fast_advertising_deadline_ = 0;
+  }
+  setup_render_requested_ = false;
+  if (!owner_address_.isEmpty()) connection_render_requested_ = true;
+  if (!active_ || connected_) return;
+
+  const bool fast = current_.power.profile == PowerProfile::kMains ||
+                    (fast_advertising_deadline_ != 0 &&
+                     !deadlineReached(fast_advertising_deadline_));
+  NimBLEDevice::stopAdvertising();
+  if (!configureAdvertising(fast) || !NimBLEDevice::startAdvertising()) {
+    const std::lock_guard<std::mutex> lock(tx_mutex_);
+    advertising_restart_at_ = millis() + kAdvertisingRetryDelayMs;
+    TOOLKIT_LOG("ble", "advertising refresh failed; retry scheduled");
+  }
+}
+
 void BleProtocolService::loop() {
   if (!active_) return;
   pumpTx();
@@ -1319,7 +1413,12 @@ void BleProtocolService::loop() {
     }
   }
   if (deadlineReached(enrollment_deadline_)) {
-    enrollment_deadline_ = 0;
+    closeSetupMode();
+    TOOLKIT_LOG("security", "setup window expired");
+  }
+  if (setup_render_requested_.exchange(false)) {
+    display_.renderPairing(passkey_, !owner_address_.isEmpty(), sessionReady());
+    display_.present(current_.display);
   }
   {
     const std::lock_guard<std::mutex> lock(tx_mutex_);
@@ -1384,6 +1483,8 @@ void BleProtocolService::stop() {
   battery_level_ = nullptr;
   authenticated_ = false;
   connection_render_requested_ = false;
+  setup_render_requested_ = false;
+  enrollment_deadline_ = 0;
   {
     const std::lock_guard<std::mutex> lock(rx_mutex_);
     assembly_.clear();
@@ -1394,6 +1495,7 @@ void BleProtocolService::stop() {
 
 bool BleProtocolService::takeRenderRequest(bool& force_full) {
   const bool connection_changed = connection_render_requested_.exchange(false);
+  if (setupMode()) return false;
   if (!render_requested_ && !connection_changed) return false;
   render_requested_ = false;
   force_full = force_full_requested_;

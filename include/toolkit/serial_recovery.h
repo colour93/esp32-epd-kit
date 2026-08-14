@@ -24,6 +24,7 @@ class SerialRecoveryConsole {
   void printHelp() const;
   void printStatus() const;
   void disableIo12();
+  void enterSetup();
   void prepareFactoryReset();
   void confirmFactoryReset(const String& value);
   void restart() const;
