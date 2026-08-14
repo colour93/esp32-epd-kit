@@ -53,7 +53,7 @@ struct PageBinding {
 struct PageSettings {
   String id = "home";
   PageBinding bindings[kMaxPageBindings]{
-      {"codex", "codex.usage.compact", "codex/default"}};
+      {"primary", "codex.usage.compact", "codex/default"}};
   size_t binding_count = 1;
 
   const PageBinding* findBinding(const String& slot_id) const {

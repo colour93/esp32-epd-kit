@@ -1,6 +1,6 @@
 # BLE Protocol v4 Host Implementation Guide
 
-本文是 EPD-KIT 固件 `0.3.x` 的主机实现规范。关键词“必须”“不得”“应”具有规范含义。线上唯一应用传输为 BLE；ESP32 不连接云服务，也不保存 Codex、飞书或其他数据源凭据。
+本文是 EPD-KIT 固件 `0.3.x` 的主机实现规范。关键词“必须”“不得”“应”具有规范含义。线上唯一应用传输为 BLE；ESP32 不连接云服务，也不保存 Codex、CLI 或其他数据源凭据。
 
 ## 1. v4 兼容边界
 
@@ -188,7 +188,7 @@ frame payload 容量为 `ATT_MTU - 3 - 8 - start_metadata`。单帧消息同时�
   },
   "page": {
     "id": "home",
-    "bindings": {"codex":"codex/default"}
+    "bindings": {"primary":"codex/default"}
   }
 }
 ```
@@ -207,18 +207,25 @@ Config 使用 `epd_cfg4` 双槽、CRC 和 active marker；资源快照使用 `ep
   "title": "Home",
   "slots": [
     {
-      "id": "codex",
-      "status": "active",
-      "required": true,
-      "schema_id": "codex.rate_limits",
-      "schema_version": 1
-    },
-    {
-      "id": "feishu_project",
+      "id": "primary",
       "status": "active",
       "required": false,
-      "schema_id": "feishu.project_card",
-      "schema_version": 1
+      "widgets": [
+        {"id":"codex.usage.compact","schema_id":"codex.rate_limits","schema_version":1},
+        {"id":"generic.metric.dual","schema_id":"generic.metrics","schema_version":1},
+        {"id":"generic.metric.value.1","schema_id":"generic.metrics","schema_version":1}
+      ]
+    },
+    {
+      "id": "secondary",
+      "status": "active",
+      "required": false,
+      "widgets": [
+        {"id":"generic.metric.dual","schema_id":"generic.metrics","schema_version":1},
+        {"id":"generic.metric.value.1","schema_id":"generic.metrics","schema_version":1},
+        {"id":"generic.metric.bar.1","schema_id":"generic.metrics","schema_version":1},
+        {"id":"generic.metric.ring.1","schema_id":"generic.metrics","schema_version":1}
+      ]
     }
   ],
   "timed_regions": [
@@ -234,8 +241,10 @@ Config 使用 `epd_cfg4` 双槽、CRC 和 active marker；资源快照使用 `ep
 PageSettings：
 
 ```json
-{"id":"home","bindings":{"codex":"codex/default"}}
+{"id":"home","bindings":{"primary":"codex/default"}}
 ```
+
+Home 有两个稳定 Page 变体：`home` 为双组件布局，`home.three` 为三组件布局。后者的 `first`、`second`、`third` slot 只声明单数据项 Widget，不包含双数据 Widget。通用 Widget 精确消费 `generic.metrics/v1`，`.1` 到 `.4` 后缀选择 payload 中对应的数据项。
 
 校验规则：
 

@@ -41,6 +41,7 @@ epd::ConfigStore g_config_store;
 epd::ResourceStore g_resources;
 epd::CodexUsagePage g_codex_page;
 epd::HomePage g_home_page;
+epd::HomeThreePage g_home_three_page;
 epd::PageRegistry g_pages;
 epd::DisplayManager g_display;
 epd::BleProtocolService g_ble(g_config_store, g_resources, g_pages, g_display);
@@ -65,7 +66,9 @@ uint64_t nextBoundary(uint64_t now, uint32_t interval_sec) {
 
 void registerPages() {
   String error;
-  if (!g_pages.add(g_home_page, error) || !g_pages.add(g_codex_page, error)) {
+  if (!g_pages.add(g_home_page, error) ||
+      !g_pages.add(g_home_three_page, error) ||
+      !g_pages.add(g_codex_page, error)) {
     TOOLKIT_LOG("page", String("registry error: ") + error);
   }
 }

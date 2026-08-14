@@ -7,11 +7,11 @@ Desktop Agent -> BLE v4 -> ResourceStore -> PageResources -> Model -> Widget
                                       RuntimeContext -------> Timed Region
 ```
 
-ESP32 不连接 Wi-Fi 或云服务，也不保存 Codex、飞书或其他服务凭据。
+ESP32 不连接 Wi-Fi 或云服务，也不保存 Codex、CLI 或其他服务凭据。
 
 ## 当前功能
 
-- 默认 `home` Page：每分钟时钟、Codex Compact Widget、可选飞书项目卡片；
+- `home` / `home.three`：每分钟时钟与 2/3 组件布局，支持通用数值、条形和环形组件；
 - `codex.usage` Page：Codex 完整额度页；
 - fixed-capacity `PageRegistry` 与严格 Page/Slot/Binding 校验；
 - Resource missing/invalid/stale/fresh 状态；
@@ -19,7 +19,7 @@ ESP32 不连接 Wi-Fi 或云服务，也不保存 Codex、飞书或其他服务�
 - 电池模式时钟 RTC 快路径，不启动 BLE、不加载 Resource snapshot；
 - LE Secure Connections、MITM、bonding、owner/trusted 权限。
 
-默认配置使用 `home`，绑定 `codex -> codex/default`。全刷策略为 60 次局刷、24 小时或 70% dirty area。
+默认配置使用 `home`，绑定 `primary -> codex/default`。全刷策略为 60 次局刷、24 小时或 70% dirty area。
 
 ## v4 升级
 
@@ -69,5 +69,5 @@ Factory reset 清除 v4 配置、资源、安全状态和全部 BLE bonds。GPIO
 - [BLE Protocol v4 Host Implementation Guide](docs/ble_protocol_v4.md)
 - [功能组件开发规范](docs/feature_component_development.md)
 - [Codex Rate Limits Schema 与 Producer](docs/openai_codex_usage.md)
-- [飞书项目卡片 Schema 与 Producer](docs/feishu_project.md)
+- [通用 CLI + JMESPath 数据源](docs/generic_cli.md)
 - [Desktop Agent 与 Web 工作台](../esp32-epd-kit-web/README.md)

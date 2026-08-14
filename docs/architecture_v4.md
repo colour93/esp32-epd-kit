@@ -7,7 +7,7 @@
 v4 把页面、数据源和绘制组件解耦：
 
 ```text
-数据源 -> Producer -> SemanticResource -> ResourcePublisher -> BLE v4
+数据源实例 -> 数据源类型/Producer -> SemanticResource -> ResourcePublisher -> BLE v4
                                                             |
                                                             v
 ResourceStore -> Page Binding -> PageResources -> Model -> Widget
@@ -21,7 +21,7 @@ RuntimeContext -----------------------+--------------------> LVGL -> EPD
 - Producer 与 Page 不要求一一对应；
 - Widget 可被多个 Page 复用，只消费已解析 Model；
 - 时钟等纯运行时内容通过 Timed Region 局部刷新；
-- 页面和 Producer 都使用编译期 Registry，不支持运行时插件或代码生成。
+- 页面和数据源类型使用编译期 Registry；数据源实例可在运行时创建，但不支持运行时插件或代码生成。
 
 ## 2. 组件职责
 
@@ -44,12 +44,13 @@ Page manifest 包含 active/reserved slots 与 timed regions。active slot 精�
 
 | 组件 | 职责 |
 |---|---|
-| `Producer` | 数据源认证、采集、字段投影、业务状态 |
-| `ProducerRegistry` | 编译期注册、重复 ID 拒绝、按 ID 刷新、auto-sync 集合 |
+| `SourceType` / `Producer` | 数据源类型定义、认证、采集和字段投影 |
+| `Source` | 具有稳定 ID、类型 ID、配置、状态和资源键的数据实例 |
+| `ProducerRegistry` | 编译期注册类型、重复 ID 拒绝、按类型刷新、auto-sync 集合 |
 | `ResourcePublisher` | revision、语义 hash、300 秒 heartbeat、重连 reconcile、串行 BLE 写 |
 | `SyncCoordinator` | battery 自动连接的 cycle 生命周期和唯一 `system.sync.complete` 调用 |
 | `BleGateway` | 扫描、目标恢复、配对、v4 RPC 串行化和状态 reload |
-| `SharedState` | 通用 `producers[]`、设备状态、日志和 SSE snapshot |
+| `SharedState` | `source_types[]`、`sources[]`、设备状态、日志和 SSE snapshot |
 
 Producer 发布的 `SemanticResource` 不含 `revision` 或 `updated_at`。这两个字段只由 Publisher 在写设备时生成。Producer 不直接调用 `resource.put`、`resource.list` 或 `system.sync.complete`。
 
@@ -59,9 +60,9 @@ React 只访问 Agent 的 loopback HTTP/SSE，不使用 Web Bluetooth，也不�
 
 - `capabilities.pages` 动态生成 Page/Slot/Binding 表单；
 - active slot 只显示 schema/version 精确匹配的 Resource；
-- `producers[]` 动态生成 Producer 状态和刷新入口；
+- `source_types[]` 生成类型目录，`sources[]` 生成实例状态和刷新入口；
 - owner-only Resource JSON PUT 用于新 schema 联调；
-- Codex 账号等专有信息位于对应 Producer `details`，不进入设备公共模型。
+- Codex 账号等专有信息位于对应 Source `details`，不进入设备公共模型。
 
 ## 3. 数据与控制流
 
@@ -148,11 +149,12 @@ v4 使用独立标识：
 
 ## 7. 当前参考实现
 
-- `home`：默认 Page，组合时钟、Codex Compact Widget 和可选飞书项目卡片；
+- `home`：默认双组件 Page，组合时钟、Codex Compact 与通用指标 Widget；
+- `home.three`：三组件 Page，每个 slot 只展示一个通用数据项；
 - `codex.usage`：Codex 完整 Page；
 - `codex.rate_limits/v1`：两个 Page 共享的语义 Resource；
-- `codex.usage` Producer：读取本机 Codex app-server；
-- `feishu.project_card/v1`：Home 的 optional active slot；
-- `feishu.project` Producer：执行用户配置的 Meegle CLI 命令并用 JMESPath 投影卡片字段。
+- `generic.metrics/v1`：通用的 `data + label + description + progress` 数据契约；
+- `codex.usage` Producer：读取本机 Codex app-server，同时发布 `codex/default` 与 `codex/metrics`；
+- `cli.jmespath` 数据源类型：可创建多个实例，各自执行 CLI，并用 JMESPath 投影 `cli/{instance-id}`。
 
 新增功能应从 schema 和 Producer/Page 边界开始，完整步骤见 [功能组件开发规范](feature_component_development.md)。

@@ -41,13 +41,13 @@ src/main.cpp                        # 唯一 Page 注册点
 Agent/Web：
 
 ```text
-agent/src/<feature>.rs              # Producer 与数据源客户端
+agent/src/<feature>.rs              # 数据源类型、实例管理与采集客户端
 agent/src/producer.rs               # 公共 Producer 契约
 agent/src/publisher.rs              # 公共发布器，不放业务逻辑
 agent/src/coordinator.rs            # 公共同步 cycle
 agent/src/main.rs                   # 唯一 Producer 注册点
-src/lib/agent.ts                    # 通用协议类型；新 Producer 通常不改
-src/App.tsx                         # 通用 Page/Resource/Producer UI；新 Producer 通常不改
+src/lib/agent.ts                    # 通用协议类型；新数据源类型通常不改
+src/App.tsx                         # 通用 Page/Resource/数据源 UI；新类型通常不改
 ```
 
 ID 规则：
@@ -56,9 +56,10 @@ ID 规则：
 |---|---|---|
 | schema ID | `<domain>.<noun>` | `codex.rate_limits` |
 | Page ID | `<domain>.<page>` 或稳定短名 | `codex.usage`、`home` |
-| Producer ID | `<domain>.<feature>` | `codex.usage` |
+| 数据源类型 ID | `<domain>.<feature>` | `codex.usage`、`cli.jmespath` |
+| 数据源实例 ID | 稳定安全短名 | `team-issues` |
 | Resource key | `<domain>/<instance>` | `codex/default` |
-| slot ID | Page 内局部小写 snake_case | `codex`、`feishu_project` |
+| slot ID | Page 内局部小写 snake_case | `primary`、`secondary` |
 | timed region ID | Page 内局部小写 snake_case | `clock` |
 
 schema/page/resource key 最长 64 bytes；slot ID 最长 32 bytes。ID 一旦发布不得改变含义。破坏字段语义时升级 schema version，不在同一 version 下兼容猜测。
@@ -412,21 +413,21 @@ let producers = producer::ProducerRegistry::new(
 Codex：
 
 - schema：`codex.rate_limits/v1`；
-- Producer：`codex.usage`，采集 app-server 并发布 `codex/default`；
+- Producer：`codex.usage`，采集 app-server 并发布 `codex/default` 与 `codex/metrics`；
 - Model：`CodexUsageModel::fromSlot`；
 - Widget：`CodexUsageFullWidget` 与 `CodexUsageCompactWidget`；
 - Page：`codex.usage`，required active slot `codex`。
 
 Home：
 
-- Page ID：`home`，是 v4 默认 Page；
-- required active `codex -> codex/default`；
-- optional active `feishu_project -> feishu.project_card/v1`；
-- 复用 Codex Compact Widget，并编排 Feishu Project Compact Widget；
+- Page ID：`home` 是 v4 默认双组件 Page，`home.three` 是三组件布局；
+- `home` 的两个 slot 支持 Codex 双窗口和 `generic.metrics/v1` 通用组件；
+- `home.three` 的三个 slot 只暴露单数据项的数值、条形进度和环形进度组件；
+- `generic.metrics/v1` 的组件通过 Widget ID 后缀 `.1` 到 `.4` 选择数据项；
 - `clock` timed region 为 `{8,0,234,30}` / 60 秒；
-- 时钟只读 `RuntimeContext`；飞书 slot 未绑定或资源缺失时显示稳定等待态。
+- 时钟只读 `RuntimeContext`；slot 未绑定或资源缺失时显示稳定等待态。
 
-这说明 Page 与 Producer 不是一一对应：Home 同时组合时钟、Codex 和飞书资源，而 Codex 完整页继续复用同一个 Resource/Model。
+这说明 Page 与 Producer 不是一一对应：Home 可同时组合 Codex 与任意 CLI 资源，而 Codex 完整页继续复用专用 Resource/Model。
 
 ## 13. 错误与降级
 

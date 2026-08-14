@@ -29,6 +29,8 @@ Agent 复用本机 Codex 已有登录，只调用官方 app-server stdio 接口�
 | ttl_sec | `600` |
 | persistence | `snapshot` |
 
+Producer 还发布 `codex/metrics`，schema 为 `generic.metrics/v1`。该资源按固定顺序提供 5h 剩余、7d 剩余、5h 重置倒计时和 7d 重置倒计时，使 Home 的通用组件可以选择双数据或任一单项。
+
 `revision` 与 `updated_at` 由 `ResourcePublisher` 写入，Producer 不生成。
 
 完整示例：
@@ -153,12 +155,14 @@ Publisher 规则：
 
 ## 6. 固件消费
 
-两个 Page 绑定同一 Resource：
+专用 Page/Widget 绑定 `codex/default`：
 
 | Page | slot | Widget |
 |---|---|---|
-| `home` | required active `codex` | `CodexUsageCompactWidget` |
+| `home` | optional active `primary` / `secondary` | `CodexUsageCompactWidget` |
 | `codex.usage` | required active `codex` | `CodexUsageFullWidget` |
+
+Home 也可把任意 slot 绑定到 `codex/metrics`，使用 `generic.metric.dual` 或 `generic.metric.{value,bar,ring}.1..4`。`home.three` 只声明单数据项通用 Widget。
 
 `CodexUsageModel::fromSlot` 先处理 `missing/invalid/stale/fresh`，再校验 payload。`selected` 缺失或两个窗口均不可用时，fresh Resource 映射为数据异常。stale Resource 可保留最后值并明确显示过期。
 
