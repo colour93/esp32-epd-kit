@@ -4,24 +4,56 @@
 
 namespace epd::hardware {
 
+#if defined(EPD_PANEL_E029A01)
+constexpr int kSpiSck = 2;
+constexpr int kSpiMosi = 3;
+constexpr int kEpdCs = 7;
+constexpr int kEpdBusy = 0;
+constexpr int kEpdReset = 10;
+constexpr int kEpdDc = 6;
+constexpr int kButton1 = 4;
+constexpr int kButton2 = 5;
+constexpr int kBatteryAdc = -1;
+constexpr bool kHasBatteryAdc = false;
+
+constexpr uint16_t kNativeWidth = 128;
+constexpr uint16_t kNativeVisibleWidth = 128;
+constexpr uint16_t kNativeHeight = 296;
+constexpr uint16_t kLogicalWidth = 296;
+constexpr uint16_t kLogicalHeight = 128;
+constexpr const char* kPanelName = "E029A01";
+#else
 constexpr int kSpiSck = 13;
 constexpr int kSpiMosi = 14;
 constexpr int kEpdCs = 15;
 constexpr int kEpdBusy = 25;
 constexpr int kEpdReset = 26;
 constexpr int kEpdDc = 27;
-constexpr int kUserKey = 12;
+constexpr int kButton1 = 12;
+constexpr int kButton2 = -1;
 constexpr int kBatteryAdc = 36;
+constexpr bool kHasBatteryAdc = true;
 
-constexpr uint16_t kLogicalWidth = 250;
-constexpr uint16_t kLogicalHeight = 122;
 constexpr uint16_t kNativeWidth = 128;
 constexpr uint16_t kNativeVisibleWidth = 122;
 constexpr uint16_t kNativeHeight = 250;
+constexpr uint16_t kLogicalWidth = 250;
+constexpr uint16_t kLogicalHeight = 122;
+constexpr const char* kPanelName = "GDEM0213B74";
+#endif
+
+constexpr int kUserKey = kButton1;
 constexpr uint16_t kLogicalStride = (kLogicalWidth + 7U) / 8U;
 constexpr size_t kLogicalFrameBytes = kLogicalStride * kLogicalHeight;
-constexpr uint16_t kNativeStride = kNativeWidth / 8U;
+constexpr uint16_t kNativeStride = (kNativeWidth + 7U) / 8U;
 constexpr size_t kNativeFrameBytes = kNativeStride * kNativeHeight;
+
+static_assert(kLogicalHeight == kNativeVisibleWidth,
+              "logical canvas must fill the visible panel width");
+static_assert(kLogicalWidth == kNativeHeight,
+              "logical canvas must fill the panel height");
+static_assert(kNativeWidth % 8U == 0,
+              "native panel width must be byte aligned");
 
 #ifndef EPD_TOOLKIT_VERSION
 #define EPD_TOOLKIT_VERSION "dev"
@@ -37,7 +69,7 @@ constexpr uint32_t versionHash(const char* value,
 
 // Bump the layout revision when rendering semantics change. Combining it with
 // the firmware version also invalidates the RTC frame after a version upgrade.
-constexpr uint32_t kDisplayLayoutRevision = 9;
+constexpr uint32_t kDisplayLayoutRevision = 10;
 constexpr uint32_t kDisplayUiVersion =
     versionHash(EPD_TOOLKIT_VERSION) ^ kDisplayLayoutRevision;
 constexpr uint32_t kRtcMagic = 0x45504431U;  // "EPD1"

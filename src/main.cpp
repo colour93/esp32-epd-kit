@@ -2,7 +2,10 @@
 
 #include <NimBLEDevice.h>
 #include <Preferences.h>
+#include <driver/gpio.h>
+#if CONFIG_IDF_TARGET_ESP32
 #include <driver/rtc_io.h>
+#endif
 #include <esp_attr.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
@@ -74,7 +77,9 @@ void registerPages() {
 }
 
 uint16_t readBatteryMillivolts(const epd::DeviceConfig& config) {
-  if (!config.hardware.battery.enabled) return 0;
+  if (!epd::hardware::kHasBatteryAdc || !config.hardware.battery.enabled) {
+    return 0;
+  }
   pinMode(epd::hardware::kBatteryAdc, INPUT);
   analogReadResolution(12);
   analogSetPinAttenuation(epd::hardware::kBatteryAdc, ADC_11db);
@@ -109,7 +114,8 @@ epd::RuntimeContext runtimeContext(const epd::DeviceConfig& config,
   epd::RuntimeContext context;
   context.now = unixNow();
   context.battery_mv = g_battery_mv;
-  context.battery_enabled = config.hardware.battery.enabled;
+  context.battery_enabled =
+      epd::hardware::kHasBatteryAdc && config.hardware.battery.enabled;
   context.connected = connected;
   context.utc_offset_minutes = utc_offset_minutes;
   return context;
@@ -151,10 +157,17 @@ void configureKeyWake(const epd::DeviceConfig& config) {
          static_cast<int32_t>(millis() - release_deadline) < 0) {
     delay(10);
   }
+#if CONFIG_IDF_TARGET_ESP32C3
+  gpio_sleep_set_pull_mode(
+      static_cast<gpio_num_t>(epd::hardware::kUserKey), GPIO_PULLUP_ONLY);
+  esp_deep_sleep_enable_gpio_wakeup(
+      1ULL << epd::hardware::kUserKey, ESP_GPIO_WAKEUP_GPIO_LOW);
+#else
   rtc_gpio_pullup_dis(static_cast<gpio_num_t>(epd::hardware::kUserKey));
   rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(epd::hardware::kUserKey));
   esp_sleep_enable_ext0_wakeup(
       static_cast<gpio_num_t>(epd::hardware::kUserKey), 0);
+#endif
 }
 
 [[noreturn]] void sleepUntil(const epd::DeviceConfig& config,

@@ -2,6 +2,7 @@
 
 #include <time.h>
 
+#include "toolkit/hardware.h"
 #include "toolkit/ui_fonts.h"
 
 namespace epd {
@@ -295,8 +296,11 @@ void CodexUsageFullWidget::build(lv_obj_t* parent, const Rect& bounds,
     const String reset = resetText(window, model.now);
     label(root, reset.c_str(), x, 85, &ui_font_zh_14);
   }
-  rule(root, 8, 102, bounds.width - 16);
-  lv_obj_t* status = label(root, statusText(state.status), 8, 105, &ui_font_zh_14);
+  const int16_t footer_rule_y = bounds.height - 20;
+  const int16_t footer_text_y = bounds.height - 17;
+  rule(root, 8, footer_rule_y, bounds.width - 16);
+  lv_obj_t* status =
+      label(root, statusText(state.status), 8, footer_text_y, &ui_font_zh_14);
   lv_obj_set_style_text_color(status, lv_color_white(), 0);
   lv_obj_set_style_bg_color(status, lv_color_black(), 0);
   lv_obj_set_style_bg_opa(status, LV_OPA_COVER, 0);
@@ -310,8 +314,9 @@ void CodexUsageFullWidget::build(lv_obj_t* parent, const Rect& bounds,
     gmtime_r(&timestamp, &local_time);
     strftime(updated, sizeof(updated), "更新 %m-%d %H:%M", &local_time);
   }
-  lv_obj_t* updated_label = label(root, updated, 0, 105, &ui_font_zh_14);
-  lv_obj_align(updated_label, LV_ALIGN_TOP_RIGHT, -8, 105);
+  lv_obj_t* updated_label =
+      label(root, updated, 0, footer_text_y, &ui_font_zh_14);
+  lv_obj_align(updated_label, LV_ALIGN_TOP_RIGHT, -8, footer_text_y);
 }
 
 void CodexUsageCompactWidget::build(lv_obj_t* parent, const Rect& bounds,
@@ -326,12 +331,14 @@ void CodexUsageCompactWidget::build(lv_obj_t* parent, const Rect& bounds,
   const String secondary = model.usage.secondary.present
                                ? String(model.usage.secondary.remainingPercent())
                                : "--";
+  const int16_t half = bounds.width / 2;
   label(root, "5h", 3, 29, &lv_font_montserrat_12);
-  boundedLabel(root, primary, 3, 43, 46, LV_TEXT_ALIGN_LEFT,
+  boundedLabel(root, primary, 3, 43, half - 8, LV_TEXT_ALIGN_LEFT,
                &lv_font_montserrat_20);
-  verticalRule(root, 54, 28, 40);
-  label(root, "7d", 62, 29, &lv_font_montserrat_12);
-  boundedLabel(root, secondary, 62, 43, 44, LV_TEXT_ALIGN_LEFT,
+  verticalRule(root, half, 28, bounds.height - 42);
+  label(root, "7d", half + 8, 29, &lv_font_montserrat_12);
+  boundedLabel(root, secondary, half + 8, 43, half - 10,
+               LV_TEXT_ALIGN_LEFT,
                &lv_font_montserrat_20);
 }
 
@@ -342,7 +349,9 @@ void CodexUsagePage::buildUi(lv_obj_t* root, const PageContext& context) {
   lv_obj_set_style_border_width(root, 0, 0);
   lv_obj_set_style_pad_all(root, 0, 0);
   CodexUsageFullWidget::build(
-      root, {0, 0, 250, 122},
+      root,
+      {0, 0, static_cast<int16_t>(hardware::kLogicalWidth),
+       static_cast<int16_t>(hardware::kLogicalHeight)},
       CodexUsageModel::fromSlot(context.resources.get("codex"), context.runtime));
 }
 

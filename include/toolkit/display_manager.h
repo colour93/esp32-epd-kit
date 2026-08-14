@@ -13,6 +13,12 @@ namespace epd {
 
 enum class PresentResult : uint8_t { kNoChange, kPartial, kFull };
 
+#if defined(EPD_PANEL_E029A01)
+using PanelDriver = GxEPD2_290;
+#else
+using PanelDriver = GxEPD2_213_B74;
+#endif
+
 class DisplayManager {
  public:
   DisplayManager();
@@ -58,7 +64,7 @@ class DisplayManager {
                            int16_t y, const lv_font_t* font);
 
   SPIClass spi_;
-  GxEPD2_213_B74 panel_;
+  PanelDriver panel_;
   lv_display_t* lv_display_ = nullptr;
   uint8_t draw_buffer_[kDrawBufferBytes]{};
   uint8_t region_draw_buffer_[kDrawBufferBytes]{};

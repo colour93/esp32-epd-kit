@@ -252,7 +252,8 @@ void GenericMetricRingWidget::build(lv_obj_t* parent, const Rect& bounds,
   lv_obj_t* root = surface(parent, bounds);
   titleBand(root, model.title, bounds.width);
   const GenericMetricItem* item = model.item(item_index);
-  const int16_t diameter = bounds.width < 90 ? 43 : 49;
+  const int16_t available_diameter = bounds.width - 29;
+  const int16_t diameter = available_diameter < 49 ? available_diameter : 49;
   lv_obj_t* arc = lv_arc_create(root);
   lv_obj_set_size(arc, diameter, diameter);
   lv_obj_align(arc, LV_ALIGN_TOP_MID, 0, 23);

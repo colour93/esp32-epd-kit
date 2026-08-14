@@ -42,7 +42,7 @@ void styleScreen(lv_obj_t* root) {
 void addRule(lv_obj_t* root, int16_t y) {
   lv_obj_t* rule = lv_obj_create(root);
   lv_obj_set_pos(rule, 18, y);
-  lv_obj_set_size(rule, 224, 1);
+  lv_obj_set_size(rule, hardware::kLogicalWidth - 26, 1);
   lv_obj_set_style_bg_color(rule, lv_color_black(), 0);
   lv_obj_set_style_border_width(rule, 0, 0);
   lv_obj_set_style_pad_all(rule, 0, 0);
@@ -168,7 +168,8 @@ void DisplayManager::begin() {
   lv_display_set_buffers(lv_display_, draw_buffer_, nullptr, sizeof(draw_buffer_),
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
   TOOLKIT_LOG("display", String("LVGL ready ") + hardware::kLogicalWidth + "x" +
-                             hardware::kLogicalHeight);
+                             hardware::kLogicalHeight + " panel=" +
+                             hardware::kPanelName);
 }
 
 lv_obj_t* DisplayManager::addText(lv_obj_t* parent, const char* text, int16_t x,
@@ -236,7 +237,8 @@ void DisplayManager::renderPageDiagnostic(const String& page_id) {
   addRule(root, 37);
   addText(root, "未知 page id", 18, 46, &ui_font_zh_14);
   addText(root, page_id.c_str(), 18, 68, &lv_font_montserrat_14);
-  addText(root, "请通过管理端重新配置", 18, 101, &ui_font_zh_14);
+  addText(root, "请通过管理端重新配置", 18,
+          hardware::kLogicalHeight - 21, &ui_font_zh_14);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
   pending_page_hash_ = 0;
@@ -258,7 +260,8 @@ void DisplayManager::renderPairing(uint32_t passkey, bool configured,
   snprintf(value, sizeof(value), "%06lu", static_cast<unsigned long>(passkey));
   lv_obj_t* key = addText(root, value, 18, 52, &lv_font_montserrat_36);
   lv_obj_set_style_text_letter_space(key, 4, 0);
-  addText(root, "请在电脑端输入上方号码", 18, 101, &ui_font_zh_14);
+  addText(root, "请在电脑端输入上方号码", 18,
+          hardware::kLogicalHeight - 21, &ui_font_zh_14);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
   pending_page_hash_ = 0;
@@ -273,7 +276,8 @@ void DisplayManager::renderLowBattery(uint16_t millivolts, bool connected) {
   char value[16];
   snprintf(value, sizeof(value), "%.2fV", millivolts / 1000.0F);
   addText(root, value, 18, 39, &lv_font_montserrat_36);
-  addText(root, "无线连接已暂停 充电后自动恢复", 18, 96,
+  addText(root, "无线连接已暂停 充电后自动恢复", 18,
+          hardware::kLogicalHeight - 26,
           &ui_font_zh_14);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
@@ -291,7 +295,8 @@ void DisplayManager::renderFactoryResetConfirmation(uint32_t code,
   char value[12];
   snprintf(value, sizeof(value), "%06lu", static_cast<unsigned long>(code));
   addText(root, value, 18, 43, &lv_font_montserrat_36);
-  addText(root, "在受信主机输入确认码", 18, 94, &ui_font_zh_14);
+  addText(root, "在受信主机输入确认码", 18,
+          hardware::kLogicalHeight - 28, &ui_font_zh_14);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
   pending_page_hash_ = 0;
@@ -363,11 +368,21 @@ PresentResult DisplayManager::present(const DisplaySettings& settings,
   panel_.init(0, full, 10, false);
 
   if (full) {
+#if defined(EPD_PANEL_E029A01)
+    panel_.writeImage(native_new_, 0, 0, hardware::kNativeWidth,
+                      hardware::kNativeHeight);
+#else
     panel_.writeImageForFullRefresh(native_new_, 0, 0, hardware::kNativeWidth,
                                     hardware::kNativeHeight);
+#endif
     panel_.refresh(false);
+#if defined(EPD_PANEL_E029A01)
+    panel_.writeImage(native_new_, 0, 0, hardware::kNativeWidth,
+                      hardware::kNativeHeight);
+#else
     panel_.writeImageAgain(native_new_, 0, 0, hardware::kNativeWidth,
                            hardware::kNativeHeight);
+#endif
   } else {
     const core::Rect native_dirty = logicalToNativeRect(dirty);
     panel_.writeImagePartToPrevious(
@@ -380,10 +395,17 @@ PresentResult DisplayManager::present(const DisplaySettings& settings,
                           native_dirty.height);
     panel_.refresh(native_dirty.x, native_dirty.y, native_dirty.width,
                    native_dirty.height);
+#if defined(EPD_PANEL_E029A01)
+    panel_.writeImagePart(native_new_, native_dirty.x, native_dirty.y,
+                          hardware::kNativeWidth, hardware::kNativeHeight,
+                          native_dirty.x, native_dirty.y, native_dirty.width,
+                          native_dirty.height);
+#else
     panel_.writeImagePartAgain(native_new_, native_dirty.x, native_dirty.y,
                                hardware::kNativeWidth, hardware::kNativeHeight,
                                native_dirty.x, native_dirty.y,
                                native_dirty.width, native_dirty.height);
+#endif
   }
 
   panel_.hibernate();

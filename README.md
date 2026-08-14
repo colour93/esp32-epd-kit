@@ -27,12 +27,22 @@ v4 不兼容 v3，不提供 migration。固件只使用 `epd_cfg4`、`epd_res4`�
 
 ## 构建
 
+默认面板为 `GxEPD2_213_B74`。`esp32c3_e029a01` 环境支持 ESP32-C3
+开发板与微雪
+2.9 寸黑白屏 E029A01，驱动为 `GxEPD2_290`。逻辑画布分别使用面板的
+250x122 和 296x128 真实分辨率；页面保持相同结构，并按画布尺寸重新计算
+全屏、两分栏和三分栏布局。
+项目使用 `huge_app.csv`，不支持 OTA。调试串口为 `115200`。
+
 ```bash
+# 2.13 寸 GDEM0213B74
 pio run -e esp32dev
 pio run -e esp32dev_release
-```
 
-默认面板为 `GxEPD2_213_B74`，逻辑画布为 250x122。项目使用 `huge_app.csv`，不支持 OTA。调试串口为 `115200`。
+# 2.9 寸 E029A01
+pio run -e esp32c3_e029a01
+pio run -e esp32c3_e029a01_release
+```
 
 ## 硬件
 
@@ -46,6 +56,23 @@ pio run -e esp32dev_release
 | EPD DC | 27 |
 | optional key | 12 |
 | optional VBAT/3 ADC | 36 |
+
+E029A01 环境使用以下接线：
+
+| Function | GPIO |
+|---|---:|
+| EPD SCK | 2 |
+| EPD MOSI | 3 |
+| EPD CS | 7 |
+| EPD BUSY | 0 |
+| EPD RST | 10 |
+| EPD DC | 6 |
+| BUTTON1 / user key | 4 |
+| BUTTON2 / reserved | 5 |
+
+`esp32c3_e029a01` 使用 PlatformIO 的通用 `esp32-c3-devkitm-1` board。
+GPIO4 作为现有用户按键及深睡唤醒脚；BUTTON2 暂未绑定业务功能。该硬件配置
+没有提供电池 ADC，因此电量采样在此环境中停用。
 
 ## 串口恢复
 
