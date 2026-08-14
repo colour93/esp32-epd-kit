@@ -12,7 +12,8 @@ constexpr int kEpdBusy = 0;
 constexpr int kEpdReset = 10;
 constexpr int kEpdDc = 6;
 constexpr int kButton1 = 4;
-constexpr int kButton2 = 5;
+constexpr int kButton2 = 13;
+constexpr bool kUserKeyActiveHigh = true;
 constexpr int kBatteryAdc = -1;
 constexpr bool kHasBatteryAdc = false;
 
@@ -31,6 +32,7 @@ constexpr int kEpdReset = 26;
 constexpr int kEpdDc = 27;
 constexpr int kButton1 = 12;
 constexpr int kButton2 = -1;
+constexpr bool kUserKeyActiveHigh = false;
 constexpr int kBatteryAdc = 36;
 constexpr bool kHasBatteryAdc = true;
 

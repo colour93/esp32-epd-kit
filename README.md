@@ -68,11 +68,12 @@ E029A01 环境使用以下接线：
 | EPD RST | 10 |
 | EPD DC | 6 |
 | BUTTON1 / user key | 4 |
-| BUTTON2 / reserved | 5 |
+| BUTTON2 / reserved | 13 |
 
-`esp32c3_e029a01` 使用 PlatformIO 的通用 `esp32-c3-devkitm-1` board。
-GPIO4 作为现有用户按键及深睡唤醒脚；BUTTON2 暂未绑定业务功能。该硬件配置
-没有提供电池 ADC，因此电量采样在此环境中停用。
+`esp32c3_e029a01` 使用 PlatformIO 的 `airm2m_core_esp32c3` board。
+GPIO4 的 BUTTON1 采用外部 10K 下拉、按下接 3.3V，高电平触发现有用户按键
+及深睡唤醒；GPIO13 的 BUTTON2 暂未绑定业务功能。该硬件配置没有提供电池
+ADC，因此电量采样在此环境中停用。
 
 ## 串口恢复
 

@@ -150,18 +150,27 @@ bool renderTimedRegion(const epd::DeviceConfig& config,
                                      epd::pageIdentityHash(config.page));
 }
 
+bool userKeyPressed() {
+  return digitalRead(epd::hardware::kUserKey) ==
+         (epd::hardware::kUserKeyActiveHigh ? HIGH : LOW);
+}
+
 void configureKeyWake(const epd::DeviceConfig& config) {
   if (config.hardware.io12_mode != epd::Io12Mode::kKey) return;
   const uint32_t release_deadline = millis() + 2000U;
-  while (digitalRead(epd::hardware::kUserKey) == LOW &&
+  while (userKeyPressed() &&
          static_cast<int32_t>(millis() - release_deadline) < 0) {
     delay(10);
   }
 #if CONFIG_IDF_TARGET_ESP32C3
   gpio_sleep_set_pull_mode(
-      static_cast<gpio_num_t>(epd::hardware::kUserKey), GPIO_PULLUP_ONLY);
+      static_cast<gpio_num_t>(epd::hardware::kUserKey),
+      epd::hardware::kUserKeyActiveHigh ? GPIO_PULLDOWN_ONLY
+                                       : GPIO_PULLUP_ONLY);
   esp_deep_sleep_enable_gpio_wakeup(
-      1ULL << epd::hardware::kUserKey, ESP_GPIO_WAKEUP_GPIO_LOW);
+      1ULL << epd::hardware::kUserKey,
+      epd::hardware::kUserKeyActiveHigh ? ESP_GPIO_WAKEUP_GPIO_HIGH
+                                       : ESP_GPIO_WAKEUP_GPIO_LOW);
 #else
   rtc_gpio_pullup_dis(static_cast<gpio_num_t>(epd::hardware::kUserKey));
   rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(epd::hardware::kUserKey));
@@ -262,12 +271,12 @@ bool tryBatteryTimedFastPath(const epd::DeviceConfig& config) {
 
 void handleKey() {
   if (g_ble.config().hardware.io12_mode != epd::Io12Mode::kKey) return;
-  const bool pressed = digitalRead(epd::hardware::kUserKey) == LOW;
+  const bool pressed = userKeyPressed();
   if (pressed == g_key_pressed || millis() - g_key_changed_at < 35U) return;
   g_key_changed_at = millis();
   g_key_pressed = pressed;
   if (!pressed) {
-    TOOLKIT_LOG("input", "IO12 short press");
+    TOOLKIT_LOG("input", "user key short press");
     g_ble.emitKeyPressed();
   }
 }
@@ -316,7 +325,8 @@ void setup() {
     TOOLKIT_LOG("security", "fresh v4 security state initialized");
   }
   if (config.hardware.io12_mode == epd::Io12Mode::kKey) {
-    pinMode(epd::hardware::kUserKey, INPUT_PULLUP);
+    pinMode(epd::hardware::kUserKey,
+            epd::hardware::kUserKeyActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
   }
   g_display.begin();
   tryBatteryTimedFastPath(config);
