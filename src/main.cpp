@@ -309,9 +309,9 @@ void handleMainsPageTick() {
 }  // namespace
 
 void setup() {
-  registerPages();
   g_serial.begin();
   TOOLKIT_LOG("core", String("boot firmware=") + EPD_TOOLKIT_VERSION);
+  registerPages();
   epd::DeviceConfig config;
   const bool loaded = g_config_store.load(config);
   if (!loaded) {

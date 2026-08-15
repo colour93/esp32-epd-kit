@@ -12,6 +12,16 @@
 namespace epd {
 namespace {
 
+constexpr uint8_t displaySpiBus() {
+#if CONFIG_IDF_TARGET_ESP32C3
+  // ESP32-C3 exposes one general-purpose SPI controller. In the Arduino core
+  // it is FSPI (bus 0); HSPI is bus 1 and SPIClass::begin() rejects it.
+  return FSPI;
+#else
+  return HSPI;
+#endif
+}
+
 struct RtcDisplayState {
   uint32_t magic;
   uint32_t ui_version;
@@ -64,7 +74,7 @@ void addConnectionIndicator(lv_obj_t* root, bool connected) {
 }  // namespace
 
 DisplayManager::DisplayManager()
-    : spi_(HSPI),
+    : spi_(displaySpiBus()),
       panel_(hardware::kEpdCs, hardware::kEpdDc, hardware::kEpdReset,
              hardware::kEpdBusy) {}
 
@@ -260,7 +270,7 @@ void DisplayManager::renderPairing(uint32_t passkey, bool configured,
   snprintf(value, sizeof(value), "%06lu", static_cast<unsigned long>(passkey));
   lv_obj_t* key = addText(root, value, 18, 52, &lv_font_montserrat_36);
   lv_obj_set_style_text_letter_space(key, 4, 0);
-  addText(root, "请在电脑端输入上方号码", 18,
+  addText(root, "请在 EPD Agent 配对时输入以上号码", 18,
           hardware::kLogicalHeight - 21, &ui_font_zh_14);
   lv_obj_invalidate(root);
   lv_refr_now(lv_display_);
@@ -363,7 +373,14 @@ PresentResult DisplayManager::present(const DisplaySettings& settings,
   logicalToNative(frame_, native_new_);
   if (old_valid) logicalToNative(g_rtc_display_state.frame, native_old_);
 
+#if CONFIG_IDF_TARGET_ESP32C3
+  // The AirM2M variant provides the working E029A01 FSPI pin map, including
+  // its unused MISO pin. Calling begin() without it makes this Arduino core
+  // emit a misleading "SPI Does not have default pins" diagnostic.
+  spi_.begin();
+#else
   spi_.begin(hardware::kSpiSck, -1, hardware::kSpiMosi, hardware::kEpdCs);
+#endif
   panel_.selectSPI(spi_, SPISettings(4000000, MSBFIRST, SPI_MODE0));
   panel_.init(0, full, 10, false);
 
