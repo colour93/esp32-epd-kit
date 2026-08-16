@@ -101,4 +101,6 @@ Factory reset 清除 v4 配置、资源、安全状态和全部 BLE bonds。GPIO
 - [功能组件开发规范](docs/feature_component_development.md)
 - [Codex Rate Limits Schema 与 Producer](docs/openai_codex_usage.md)
 - [通用 CLI + JMESPath 数据源](docs/generic_cli.md)
+- [通用 HTTP + JMESPath 数据源](docs/generic_http.md)
+- [CC Switch 今日用量源](../esp32-epd-kit-web/docs/cc_switch_usage.md)
 - [Desktop Agent 与 Web 工作台](../esp32-epd-kit-web/README.md)
