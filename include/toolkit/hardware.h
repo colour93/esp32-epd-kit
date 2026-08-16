@@ -5,6 +5,7 @@
 namespace epd::hardware {
 
 #if defined(EPD_PANEL_E029A01)
+#if CONFIG_IDF_TARGET_ESP32C3
 constexpr int kSpiSck = 2;
 constexpr int kSpiMosi = 3;
 constexpr int kEpdCs = 7;
@@ -16,6 +17,19 @@ constexpr int kButton2 = 13;
 constexpr bool kUserKeyActiveHigh = true;
 constexpr int kBatteryAdc = -1;
 constexpr bool kHasBatteryAdc = false;
+#else
+constexpr int kSpiSck = 13;
+constexpr int kSpiMosi = 14;
+constexpr int kEpdCs = 15;
+constexpr int kEpdBusy = 25;
+constexpr int kEpdReset = 26;
+constexpr int kEpdDc = 27;
+constexpr int kButton1 = 12;
+constexpr int kButton2 = -1;
+constexpr bool kUserKeyActiveHigh = false;
+constexpr int kBatteryAdc = 36;
+constexpr bool kHasBatteryAdc = true;
+#endif
 
 constexpr uint16_t kNativeWidth = 128;
 constexpr uint16_t kNativeVisibleWidth = 128;

@@ -27,8 +27,8 @@ v4 不兼容 v3，不提供 migration。固件只使用 `epd_cfg4`、`epd_res4`�
 
 ## 构建
 
-默认面板为 `GxEPD2_213_B74`。`esp32c3_e029a01` 环境支持 ESP32-C3
-开发板与微雪
+默认面板为 `GxEPD2_213_B74`。`esp32_e029a01` 和
+`esp32c3_e029a01` 环境分别支持经典 ESP32、ESP32-C3 开发板与微雪
 2.9 寸黑白屏 E029A01，驱动为 `GxEPD2_290`。逻辑画布分别使用面板的
 250x122 和 296x128 真实分辨率；页面保持相同结构，并按画布尺寸重新计算
 全屏、两分栏和三分栏布局。
@@ -40,6 +40,8 @@ pio run -e esp32dev
 pio run -e esp32dev_release
 
 # 2.9 寸 E029A01
+pio run -e esp32_e029a01
+pio run -e esp32_e029a01_release
 pio run -e esp32c3_e029a01
 pio run -e esp32c3_e029a01_release
 ```
@@ -57,7 +59,20 @@ pio run -e esp32c3_e029a01_release
 | optional key | 12 |
 | optional VBAT/3 ADC | 36 |
 
-E029A01 环境使用以下接线：
+经典 ESP32 的 E029A01 环境使用以下接线：
+
+| Function | GPIO |
+|---|---:|
+| EPD SCK | 13 |
+| EPD MOSI | 14 |
+| EPD CS | 15 |
+| EPD BUSY | 25 |
+| EPD RST | 26 |
+| EPD DC | 27 |
+| optional key | 12 |
+| optional VBAT/3 ADC | 36 |
+
+ESP32-C3 的 E029A01 环境使用以下接线：
 
 | Function | GPIO |
 |---|---:|
