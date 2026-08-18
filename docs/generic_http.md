@@ -204,6 +204,6 @@ payload 的 `source_status` 为 `ok`、`unconfigured` 或 `disabled`。未配置
 - HTTP、DNS、凭据库或 JMESPath 失败时，实例进入 `degraded` 并保留上一份 Resource；缺少必需密钥时进入 `auth_required`；
 - 旧 Resource 超过 TTL 后由固件显示为 stale；删除实例会注销 Resource 并删除凭据。
 
-当前固件最多保存 8 个 Resource，这个总数由 Codex、CC Switch、CLI、HTTP 和手工 Resource 共同占用；HTTP 的 16 个本机配置槽不等于 16 个设备资源槽。超过设备容量的发布会进入 `degraded`，部署时应按设备 `max_resources` 留出余量。
+当前固件最多保存 16 个 Resource，这个总数由 Codex、CC Switch、CLI、HTTP 和手工 Resource 共同占用；HTTP 的 16 个本机配置槽不等于 16 个设备资源槽。超过设备容量的发布会进入 `degraded`，部署时应按设备 `max_resources` 留出余量。
 
 通用 Widget 与 CLI 数据源相同：双组件 Home 提供双数据、单数值、条形进度和环形进度；三组件 Home 提供后三种单数据组件。Widget ID 的 `.1` 到 `.4` 对应 items 数组索引。

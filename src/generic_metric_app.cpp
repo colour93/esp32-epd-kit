@@ -220,12 +220,15 @@ void GenericMetricValueWidget::build(lv_obj_t* parent, const Rect& bounds,
   lv_obj_t* root = surface(parent, bounds);
   titleBand(root, model.title, bounds.width);
   const GenericMetricItem* item = model.item(item_index);
+  const lv_font_t* data_font =
+      item != nullptr && item->format == GenericMetricFormat::kText
+          ? &ui_font_zh_16
+          : bounds.width < 90 ? &ui_font_zh_16 : &lv_font_montserrat_20;
   boundedLabel(root, item == nullptr ? "--" : item->label, 4, 24,
                bounds.width - 8, LV_TEXT_ALIGN_CENTER);
   boundedLabel(root,
                item == nullptr ? String("--") : displayData(*item, model.now),
-               4, 40, bounds.width - 8, LV_TEXT_ALIGN_CENTER,
-               bounds.width < 90 ? &ui_font_zh_16 : &lv_font_montserrat_20);
+               4, 40, bounds.width - 8, LV_TEXT_ALIGN_CENTER, data_font);
   boundedLabel(root, secondaryText(model, item), 4, bounds.height - 18,
                bounds.width - 8, LV_TEXT_ALIGN_CENTER);
 }

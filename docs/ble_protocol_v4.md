@@ -276,7 +276,7 @@ Home 有两个稳定 Page 变体：`home` 为双组件布局，`home.three` 为�
 }
 ```
 
-限制：最多 8 个资源；key/schema ID 最长 64 bytes；schema version、revision 必须大于 0；TTL 最大 604800；payload 必须为 map，MessagePack 编码后最多 4096 bytes；全部 snapshot 最多 16384 bytes。
+限制：最多 16 个资源；key/schema ID 最长 64 bytes；schema version、revision 必须大于 0；TTL 最大 604800；payload 必须为 map，MessagePack 编码后最多 2048 bytes；全部 snapshot 最多 4096 bytes。`volatile` 资源计入条目数，但不写入 snapshot。
 
 Revision 规则：
 

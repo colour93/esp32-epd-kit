@@ -46,7 +46,7 @@ class ResourceStore {
                      bool include_payload = true);
 
  private:
-  static constexpr size_t kMaxResources = 8;
+  static constexpr size_t kMaxResources = 16;
   static constexpr size_t kMaxPayloadBytes = 2048;
   static constexpr size_t kMaxSnapshotBytes = 4096;
   static constexpr uint64_t kMinWriteIntervalSec = 3600;

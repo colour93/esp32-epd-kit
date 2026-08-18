@@ -87,7 +87,7 @@ schema/page/resource key 最长 64 bytes；slot ID 最长 32 bytes。ID 一旦�
 }
 ```
 
-约束：payload 必须是 JSON/MessagePack map，编码后不超过 4096 bytes；ResourceStore 最多 8 条；TTL 最大 604800 秒。`updated_at`、业务时间戳均为 Unix seconds。数值必须带单位语义，不允许用展示字符串代替数据，例如应传 `duration_minutes:300`，而非 `duration:"5 小时"`。
+约束：payload 必须是 JSON/MessagePack map，编码后不超过 2048 bytes；ResourceStore 最多 16 条；持久 snapshot 总计不超过 4096 bytes；TTL 最大 604800 秒。`updated_at`、业务时间戳均为 Unix seconds。数值必须带单位语义，不允许用展示字符串代替数据，例如应传 `duration_minutes:300`，而非 `duration:"5 小时"`。
 
 建议每个业务 payload 包含 `source_status`，其枚举由 schema 自己定义。凭据、refresh token、cookie、设备地址、Agent 本地路径不得进入 payload。
 

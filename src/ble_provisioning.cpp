@@ -936,7 +936,7 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
     }
     result["battery"] = current_.hardware.battery.enabled;
     result["io12"] = current_.hardware.io12_mode == Io12Mode::kKey;
-    result["max_resources"] = 8;
+    result["max_resources"] = 16;
     result["max_resource_payload_bytes"] = 2048;
     result["max_page_bindings"] = kMaxPageBindings;
     sendDocument(id, MessageKind::kResponse, response);

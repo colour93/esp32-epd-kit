@@ -1,12 +1,14 @@
 # Codex Rate Limits Schema 与 Producer
 
-本文是 `codex.rate_limits/v1` 的权威 schema 文档，同时描述 Agent 内 `codex.usage` Producer 的数据来源与投影规则。
+本文是 `codex.rate_limits/v1` 的权威 schema 文档，同时描述 Agent 内本机 Codex 与独立 OAuth 两种 Producer 的数据来源与投影规则。
 
 ## 1. 边界
 
 ```text
 codex app-server --listen stdio://
   -> Codex Producer
+OpenAI OAuth + chatgpt.com/backend-api/wham/usage
+  -> Codex OAuth Producer
   -> codex.rate_limits/v1
   -> ResourcePublisher
   -> BLE v4
@@ -15,7 +17,9 @@ codex app-server --listen stdio://
   -> Full / Compact Widget
 ```
 
-Agent 复用本机 Codex 已有登录，只调用官方 app-server stdio 接口。Agent 不实现 Codex 登录、登出、OAuth、token refresh 或 ChatGPT HTTP 请求。ESP32 与浏览器均不会收到 Codex token、cookie 或 refresh token。
+默认 `codex.usage` Producer 复用本机 Codex 已有登录，只调用官方 app-server stdio 接口。可选 `codex.oauth` Producer 使用 Codex CLI 官方 OAuth client、PKCE 和手动回调 URL 完成独立登录，直接读取 ChatGPT Codex 额度并自动刷新 token；它不要求安装、启动或登录 Codex。
+
+OAuth access token、refresh token 与 ID token 只保存在 Agent 的系统凭据库。浏览器只接收授权 URL、会话 ID和脱敏账号状态，ESP32 只接收 Resource payload；两者都不会收到 token、cookie 或系统凭据内容。
 
 ## 2. Resource Envelope
 
@@ -23,13 +27,13 @@ Agent 复用本机 Codex 已有登录，只调用官方 app-server stdio 接口�
 
 | 字段 | 值 |
 |---|---|
-| key | `codex/default` |
+| key | 本机账号为 `codex/default`；OAuth 账号为 `codex/{source_id}` |
 | schema_id | `codex.rate_limits` |
 | schema_version | `1` |
 | ttl_sec | `600` |
 | persistence | `snapshot` |
 
-Producer 还发布 `codex/metrics`，schema 为 `generic.metrics/v1`。该资源按固定顺序提供 5h 剩余、7d 剩余、5h 重置倒计时和 7d 重置倒计时，使 Home 的通用组件可以选择双数据或任一单项。
+本机 Producer 还发布 `codex/metrics`，OAuth Producer 发布 `codex/{source_id}/metrics`，schema 均为 `generic.metrics/v1`。资源按固定顺序提供 5h 剩余、7d 剩余、5h 重置倒计时和 7d 重置倒计时，使 Home 的通用组件可以选择双数据或任一单项。
 
 `revision` 与 `updated_at` 由 `ResourcePublisher` 写入，Producer 不生成。
 
@@ -135,12 +139,12 @@ Producer 使用：
 刷新触发：
 
 - Producer 启动；
-- 60 秒正常轮询；
-- `account/rateLimits/updated` 通知；
+- `account/rateLimits/updated` 通知触发事件驱动刷新；
+- 60 秒正常轮询作为通知丢失或上游不支持通知时的兜底；
 - Web 手动刷新；
 - battery auto-sync cycle。
 
-读取失败时轮询退避从 60 秒增长到最多 900 秒。旧设备 Resource 不会因一次采集失败而删除；超过 600 秒 TTL 后由固件标记 stale。
+事件刷新和兜底轮询都进入同一条 `sync_once -> ResourcePublisher` 链路。读取失败时轮询退避从 60 秒增长到最多 900 秒。旧设备 Resource 不会因一次采集失败而删除；超过 600 秒 TTL 后由固件标记 stale。
 
 Publisher 规则：
 
@@ -151,11 +155,27 @@ Publisher 规则：
 - revision 为 `max(unix_now, device_revision + 1)`；
 - 写失败不更新 sent hash/timestamp。
 
+因此 mains 设备上的数据交付是 Agent 到设备的反向推送，不依赖设备每分钟请求。后续实时数据源（例如 Codex 任务状态）应订阅其上游事件，在语义 payload 变化时直接调用 `ResourcePublisher::publish`；Publisher 负责去重、断线缓存和重连补发。周期轮询只作为可选兜底。battery 设备休眠期间无法接收推送，仍由下一次 auto-sync cycle 拉齐最新缓存。
+
 收到 `SyncCycle(id)` 后，无论成功、未登录、找不到 Codex 或 app-server 不可用，Producer 都必须通过 Publisher 报告一次 cycle completion。只有 Coordinator 在全部相关 Producer 完成且 Publisher 排空后调用 `system.sync.complete`。
+
+### 5.1 OAuth 多账号
+
+`codex.oauth` 是可配置、多实例 Producer，每个账号具有独立 source ID、资源键、启用状态和 60 至 3600 秒轮询间隔，最多 16 个账号。非敏感配置保存于本机私有 `codex-oauth-sources.json`；完整 OAuth 凭据按 source ID 保存到系统 keyring。
+
+登录使用 `https://auth.openai.com/oauth/authorize`、S256 PKCE、`offline_access` scope 和固定回调 `http://localhost:1455/auth/callback`。用户把最终回调 URL 交回 Agent 后，Agent校验 `state` 并向 `https://auth.openai.com/oauth/token` 交换 token。OAuth 会话 30 分钟过期，成功交换后立即销毁。
+
+采集前若 access token 将在 120 秒内过期，Agent 使用 refresh token 主动续期；额度接口返回 401 时强制续期并只重试一次。刷新响应未轮换 refresh token 时保留原值，轮换时原子覆盖 keyring 中的账号凭据。额度读取使用 `https://chatgpt.com/backend-api/wham/usage`，并携带 `chatgpt-account-id` 与 Codex 请求头。
+
+### 5.2 本机任务状态
+
+`codex.tasks` Producer 每 2 秒通过 app-server `thread/list` 获取最近任务及 rollout 路径，并增量读取 rollout 中的 `task_started`、`task_complete` 与 `turn_aborted` 事件。另一个 app-server 进程看到的 Desktop 线程状态固定为 `notLoaded`，因此不能使用 `thread/status/changed` 判断跨进程执行态。
+
+Producer 发布 `codex/tasks`，schema 为 `generic.metrics/v1`，最多包含 4 个最近任务，正在执行的任务排在最前。每项使用项目目录名作为 label、`执行中` / `已完成` / `已中止` 作为 data、任务标题作为 description。资源 TTL 为 30 秒且 persistence 为 `volatile`；语义状态不变时 Publisher 不写设备。Home 页面可用任意 `generic.metric.value.1..4` Widget 显示对应任务。
 
 ## 6. 固件消费
 
-专用 Page/Widget 绑定 `codex/default`：
+专用 Page/Widget 默认绑定 `codex/default`，也可以绑定任一 OAuth 账号的 `codex/{source_id}`：
 
 | Page | slot | Widget |
 |---|---|---|
@@ -168,6 +188,6 @@ Home 也可把任意 slot 绑定到 `codex/metrics`，使用 `generic.metric.dua
 
 ## 7. 隐私与兼容性
 
-payload 不得包含 email、token、cookie、Codex 可执行文件路径或 Agent 本地目录。email、账号类型和路径只可出现在 Agent 本地 `producers[].details`。
+payload 不得包含 email、token、cookie、Codex 可执行文件路径或 Agent 本地目录。email、账号类型、token 到期时间和路径只可出现在 Agent 本地 `sources[].details`。
 
 v1 新增 optional 字段时，旧 Widget 必须能忽略；删除字段、改变类型、单位或含义时必须升级 schema version，并为消费它的 PageSlot/Model 同步升级。BLE 与 Page 契约见 [BLE Protocol v4](ble_protocol_v4.md)，新增组件步骤见 [功能组件开发规范](feature_component_development.md)。
