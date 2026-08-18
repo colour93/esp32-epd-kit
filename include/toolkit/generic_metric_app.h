@@ -19,6 +19,7 @@ struct GenericMetricItem {
   String label;
   String data = "--";
   String description;
+  String icon;
   GenericMetricFormat format = GenericMetricFormat::kText;
   uint8_t progress = 0;
   bool has_progress = false;

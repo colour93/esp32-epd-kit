@@ -104,6 +104,14 @@ String secondaryText(const GenericMetricModel& model,
   return item == nullptr ? String("无此数据项") : item->description;
 }
 
+const char* iconSymbol(const String& icon) {
+  if (icon == "sync") return LV_SYMBOL_REFRESH;
+  if (icon == "check") return LV_SYMBOL_OK;
+  if (icon == "close") return LV_SYMBOL_CLOSE;
+  if (icon == "pause") return LV_SYMBOL_PAUSE;
+  return "";
+}
+
 uint8_t itemProgress(const GenericMetricItem* item) {
   return item != nullptr && item->has_progress ? item->progress : 0;
 }
@@ -168,6 +176,9 @@ GenericMetricModel GenericMetricModel::fromSlot(
     if (value["description"].is<const char*>()) {
       item.description = value["description"].as<const char*>();
     }
+    if (value["icon"].is<const char*>()) {
+      item.icon = value["icon"].as<const char*>();
+    }
     const String format = value["format"] | "text";
     item.format = format == "percent"
                       ? GenericMetricFormat::kPercent
@@ -220,6 +231,14 @@ void GenericMetricValueWidget::build(lv_obj_t* parent, const Rect& bounds,
   lv_obj_t* root = surface(parent, bounds);
   titleBand(root, model.title, bounds.width);
   const GenericMetricItem* item = model.item(item_index);
+  const bool has_icon = item != nullptr && !item->icon.isEmpty();
+  if (has_icon) {
+    boundedLabel(root, iconSymbol(item->icon), 4, 25, bounds.width - 8,
+                 LV_TEXT_ALIGN_CENTER, &lv_font_montserrat_28);
+    boundedLabel(root, displayData(*item, model.now), 4, 54,
+                 bounds.width - 8, LV_TEXT_ALIGN_CENTER, &ui_font_zh_14);
+    return;
+  }
   const lv_font_t* data_font =
       item != nullptr && item->format == GenericMetricFormat::kText
           ? &ui_font_zh_16

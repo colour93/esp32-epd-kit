@@ -153,7 +153,7 @@ v4 使用独立标识：
 - `home.three`：三组件 Page，每个 slot 只展示一个通用数据项；
 - `codex.usage`：Codex 完整 Page；
 - `codex.rate_limits/v1`：两个 Page 共享的语义 Resource；
-- `generic.metrics/v1`：通用的 `data + label + description + progress` 数据契约；
+- `generic.metrics/v1`：通用的 `data + label + description + progress` 数据契约，可选 `icon` 用于大号状态符号；
 - `codex.usage` Producer：读取本机 Codex app-server，同时发布 `codex/default` 与 `codex/metrics`；
 - `cli.jmespath` 数据源类型：可创建多个实例，各自执行 CLI，并用 JMESPath 投影 `cli/{instance-id}`。
 

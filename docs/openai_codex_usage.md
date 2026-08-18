@@ -171,7 +171,7 @@ Publisher 规则：
 
 `codex.tasks` Producer 每 2 秒通过 app-server `thread/list` 获取最近任务及 rollout 路径，并增量读取 rollout 中的 `task_started`、`task_complete` 与 `turn_aborted` 事件。另一个 app-server 进程看到的 Desktop 线程状态固定为 `notLoaded`，因此不能使用 `thread/status/changed` 判断跨进程执行态。
 
-Producer 发布 `codex/tasks`，schema 为 `generic.metrics/v1`，最多包含 4 个最近任务，正在执行的任务排在最前。每项使用项目目录名作为 label、`执行中` / `已完成` / `已中止` 作为 data、任务标题作为 description。资源 TTL 为 30 秒且 persistence 为 `volatile`；语义状态不变时 Publisher 不写设备。Home 页面可用任意 `generic.metric.value.1..4` Widget 显示对应任务。
+Producer 发布 `codex/tasks`，schema 为 `generic.metrics/v1`。第 1 项固定为总览，显示最近任务数、执行中与中止状态；后 3 项为最近任务，正在执行的任务排在前面。每项使用项目目录名作为 label、`执行中` / `已完成` / `已中止` 作为 data、任务标题作为 description，并通过 `icon` 提供 `sync` / `check` / `close` / `pause` 状态图标。通用数值 Widget 遇到这些图标时会优先渲染大号符号与状态文字。资源 TTL 为 30 秒且 persistence 为 `volatile`；语义状态不变时 Publisher 不写设备。
 
 ## 6. 固件消费
 
