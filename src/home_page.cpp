@@ -59,11 +59,41 @@ const PageSlot kThreeSlots[] = {
      sizeof(kSingleWidgets) / sizeof(kSingleWidgets[0]), false,
      SlotStatus::kActive},
 };
+#if defined(EPD_PANEL_420)
+const PageSlot kSixSlots[] = {
+    {"first", "组件 1", kSingleWidgets,
+     sizeof(kSingleWidgets) / sizeof(kSingleWidgets[0]), false,
+     SlotStatus::kActive},
+    {"second", "组件 2", kSingleWidgets,
+     sizeof(kSingleWidgets) / sizeof(kSingleWidgets[0]), false,
+     SlotStatus::kActive},
+    {"third", "组件 3", kSingleWidgets,
+     sizeof(kSingleWidgets) / sizeof(kSingleWidgets[0]), false,
+     SlotStatus::kActive},
+    {"fourth", "组件 4", kSingleWidgets,
+     sizeof(kSingleWidgets) / sizeof(kSingleWidgets[0]), false,
+     SlotStatus::kActive},
+    {"fifth", "组件 5", kSingleWidgets,
+     sizeof(kSingleWidgets) / sizeof(kSingleWidgets[0]), false,
+     SlotStatus::kActive},
+    {"sixth", "组件 6", kSingleWidgets,
+     sizeof(kSingleWidgets) / sizeof(kSingleWidgets[0]), false,
+     SlotStatus::kActive},
+};
+#endif
 constexpr int16_t kOuterMargin = 8;
 constexpr int16_t kTwoColumnGap = 16;
 constexpr int16_t kThreeColumnGap = 9;
+#if defined(EPD_PANEL_420)
+constexpr int16_t kSixColumnGap = 12;
+constexpr int16_t kSixRowGap = 12;
+#endif
 constexpr int16_t kHeaderHeight =
+#if defined(EPD_PANEL_420)
+    38;
+#else
     static_cast<int16_t>(hardware::kLogicalHeight * 31U / 122U);
+#endif
 constexpr int16_t kContentTop = kHeaderHeight + 7;
 constexpr int16_t kDividerTop = kHeaderHeight + 11;
 constexpr int16_t kContentHeight =
@@ -81,6 +111,10 @@ const TimedRegion kRegions[] = {{
 const PageManifest kManifest{"home", "Home", kSlots, 2, kRegions, 1};
 const PageManifest kThreeManifest{"home.three", "Home · 3 组件",
                                   kThreeSlots, 3, kRegions, 1};
+#if defined(EPD_PANEL_420)
+const PageManifest kSixManifest{"home.six", "Home · 2×3 组件",
+                                kSixSlots, 6, kRegions, 1};
+#endif
 
 lv_obj_t* label(lv_obj_t* parent, const char* text, int16_t x, int16_t y,
                 const lv_font_t* font) {
@@ -252,5 +286,52 @@ void HomeThreePage::buildTimedRegion(const char* id, lv_obj_t* root,
       root, {0, 0, kRegions[0].bounds.width, kRegions[0].bounds.height},
       context);
 }
+
+#if defined(EPD_PANEL_420)
+const PageManifest& HomeSixPage::manifest() const { return kSixManifest; }
+
+void HomeSixPage::buildUi(lv_obj_t* root, const PageContext& context) {
+  initializeRoot(root);
+  HomePage::buildClock(root, kRegions[0].bounds, context.runtime);
+  constexpr const char* kSlotIds[] = {"first",  "second", "third",
+                                      "fourth", "fifth",  "sixth"};
+  const int16_t column_width =
+      (hardware::kLogicalWidth - 2 * kOuterMargin - 2 * kSixColumnGap) / 3;
+  const int16_t row_height = (kContentHeight - kSixRowGap) / 2;
+
+  for (int16_t column = 1; column < 3; ++column) {
+    verticalRule(root,
+                 kOuterMargin + column * column_width +
+                     (column * 2 - 1) * kSixColumnGap / 2,
+                 kDividerTop, kDividerHeight);
+  }
+  rule(root, kOuterMargin,
+       kContentTop + row_height + kSixRowGap / 2,
+       hardware::kLogicalWidth - 2 * kOuterMargin);
+
+  for (int16_t index = 0; index < 6; ++index) {
+    const int16_t column = index % 3;
+    const int16_t row = index / 3;
+    const int16_t x = kOuterMargin + column * (column_width + kSixColumnGap);
+    const int16_t y = kContentTop + row * (row_height + kSixRowGap);
+    const int16_t width = column == 2
+                              ? hardware::kLogicalWidth - kOuterMargin - x
+                              : column_width;
+    const int16_t height = row == 1
+                               ? hardware::kLogicalHeight - 2 - y
+                               : row_height;
+    buildWidget(root, {x, y, width, height},
+                context.resources.get(kSlotIds[index]), context.runtime);
+  }
+}
+
+void HomeSixPage::buildTimedRegion(const char* id, lv_obj_t* root,
+                                   const RuntimeContext& context) {
+  if (String(id) != "clock") return;
+  HomePage::buildClock(
+      root, {0, 0, kRegions[0].bounds.width, kRegions[0].bounds.height},
+      context);
+}
+#endif
 
 }  // namespace epd

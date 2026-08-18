@@ -11,7 +11,7 @@ ESP32 不连接 Wi-Fi 或云服务，也不保存 Codex、CLI 或其他服务凭
 
 ## 当前功能
 
-- `home` / `home.three`：每分钟时钟与 2/3 组件布局，支持通用数值、条形和环形组件；
+- `home` / `home.three`：每分钟时钟与 2/3 组件布局；4.2 寸固件额外提供 `home.six` 两行三列布局；
 - `codex.usage` Page：Codex 完整额度页；
 - fixed-capacity `PageRegistry` 与严格 Page/Slot/Binding 校验；
 - Resource missing/invalid/stale/fresh 状态；
@@ -27,23 +27,31 @@ v4 不兼容 v3，不提供 migration。固件只使用 `epd_cfg4`、`epd_res4`�
 
 ## 构建
 
-默认面板为 `GxEPD2_213_B74`。`esp32_e029a01` 和
-`esp32c3_e029a01` 环境分别支持经典 ESP32、ESP32-C3 开发板与微雪
-2.9 寸黑白屏 E029A01，驱动为 `GxEPD2_290`。逻辑画布分别使用面板的
-250x122 和 296x128 真实分辨率；页面保持相同结构，并按画布尺寸重新计算
-全屏、两分栏和三分栏布局。
+`esp32_2_13` 使用 `GxEPD2_213_B74`。`esp32_2_9` 和 `esp32c3_2_9`
+分别支持经典 ESP32、ESP32-C3 开发板与微雪 2.9 寸黑白屏 E029A01，驱动为
+`GxEPD2_290`。`esp32_4_2` 使用 uPesy ESP32 Wroom DevKit，支持
+GDEY042T81/SSD1683
+400x300 黑白屏，驱动为 `GxEPD2_420_GDEY042T81`。逻辑画布分别为
+250x122、296x128 和 400x300；4.2 寸固件
+额外注册两行三列的 6 组件主页。由于 400x300 帧超过 RTC 慢速内存容量，
+4.2 寸固件深睡唤醒后重新渲染整页，不保留跨深睡的局刷帧。
+该环境与参考项目一致，使用 pioarduino stable 平台和 `upesy_wroom` board。
 项目使用 `huge_app.csv`，不支持 OTA。调试串口为 `115200`。
 
 ```bash
 # 2.13 寸 GDEM0213B74
-pio run -e esp32dev
-pio run -e esp32dev_release
+pio run -e esp32_2_13
+pio run -e esp32_2_13_release
 
 # 2.9 寸 E029A01
-pio run -e esp32_e029a01
-pio run -e esp32_e029a01_release
-pio run -e esp32c3_e029a01
-pio run -e esp32c3_e029a01_release
+pio run -e esp32_2_9
+pio run -e esp32_2_9_release
+pio run -e esp32c3_2_9
+pio run -e esp32c3_2_9_release
+
+# 4.2 寸 400x300
+pio run -e esp32_4_2
+pio run -e esp32_4_2_release
 ```
 
 ## 硬件
@@ -59,7 +67,7 @@ pio run -e esp32c3_e029a01_release
 | optional key | 12 |
 | optional VBAT/3 ADC | 36 |
 
-经典 ESP32 的 E029A01 环境使用以下接线：
+经典 ESP32 的 2.9 寸环境使用以下接线：
 
 | Function | GPIO |
 |---|---:|
@@ -69,6 +77,19 @@ pio run -e esp32c3_e029a01_release
 | EPD BUSY | 25 |
 | EPD RST | 26 |
 | EPD DC | 27 |
+| optional key | 12 |
+| optional VBAT/3 ADC | 36 |
+
+经典 ESP32 的 4.2 寸 GDEY042T81 环境使用以下接线：
+
+| Function | GPIO |
+|---|---:|
+| EPD SCK | 18 |
+| EPD MOSI | 23 |
+| EPD CS | 5 |
+| EPD BUSY | 4 |
+| EPD RST | 16 |
+| EPD DC | 17 |
 | optional key | 12 |
 | optional VBAT/3 ADC | 36 |
 
@@ -85,7 +106,7 @@ ESP32-C3 的 E029A01 环境使用以下接线：
 | BUTTON1 / user key | 4 |
 | BUTTON2 / reserved | 13 |
 
-`esp32c3_e029a01` 使用 PlatformIO 的 `airm2m_core_esp32c3` board。
+`esp32c3_2_9` 使用 PlatformIO 的 `airm2m_core_esp32c3` board。
 GPIO4 的 BUTTON1 采用外部 10K 下拉、按下接 3.3V，高电平触发现有用户按键
 及深睡唤醒；GPIO13 的 BUTTON2 暂未绑定业务功能。该硬件配置没有提供电池
 ADC，因此电量采样在此环境中停用。

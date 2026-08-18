@@ -4,7 +4,27 @@
 
 namespace epd::hardware {
 
-#if defined(EPD_PANEL_E029A01)
+#if defined(EPD_PANEL_420)
+constexpr int kSpiSck = 18;
+constexpr int kSpiMosi = 23;
+constexpr int kEpdCs = 5;
+constexpr int kEpdBusy = 4;
+constexpr int kEpdReset = 16;
+constexpr int kEpdDc = 17;
+constexpr int kButton1 = 12;
+constexpr int kButton2 = -1;
+constexpr bool kUserKeyActiveHigh = false;
+constexpr int kBatteryAdc = 36;
+constexpr bool kHasBatteryAdc = true;
+
+constexpr uint16_t kNativeWidth = 400;
+constexpr uint16_t kNativeVisibleWidth = 400;
+constexpr uint16_t kNativeHeight = 300;
+constexpr uint16_t kLogicalWidth = 400;
+constexpr uint16_t kLogicalHeight = 300;
+constexpr bool kRotateLogicalToNative = false;
+constexpr const char* kPanelName = "GDEY042T81";
+#elif defined(EPD_PANEL_E029A01)
 #if CONFIG_IDF_TARGET_ESP32C3
 constexpr int kSpiSck = 2;
 constexpr int kSpiMosi = 3;
@@ -36,6 +56,7 @@ constexpr uint16_t kNativeVisibleWidth = 128;
 constexpr uint16_t kNativeHeight = 296;
 constexpr uint16_t kLogicalWidth = 296;
 constexpr uint16_t kLogicalHeight = 128;
+constexpr bool kRotateLogicalToNative = true;
 constexpr const char* kPanelName = "E029A01";
 #else
 constexpr int kSpiSck = 13;
@@ -55,6 +76,7 @@ constexpr uint16_t kNativeVisibleWidth = 122;
 constexpr uint16_t kNativeHeight = 250;
 constexpr uint16_t kLogicalWidth = 250;
 constexpr uint16_t kLogicalHeight = 122;
+constexpr bool kRotateLogicalToNative = true;
 constexpr const char* kPanelName = "GDEM0213B74";
 #endif
 
@@ -64,10 +86,14 @@ constexpr size_t kLogicalFrameBytes = kLogicalStride * kLogicalHeight;
 constexpr uint16_t kNativeStride = (kNativeWidth + 7U) / 8U;
 constexpr size_t kNativeFrameBytes = kNativeStride * kNativeHeight;
 
-static_assert(kLogicalHeight == kNativeVisibleWidth,
+static_assert(!kRotateLogicalToNative || kLogicalHeight == kNativeVisibleWidth,
               "logical canvas must fill the visible panel width");
-static_assert(kLogicalWidth == kNativeHeight,
+static_assert(!kRotateLogicalToNative || kLogicalWidth == kNativeHeight,
               "logical canvas must fill the panel height");
+static_assert(kRotateLogicalToNative || kLogicalWidth == kNativeWidth,
+              "unrotated logical canvas must match the panel width");
+static_assert(kRotateLogicalToNative || kLogicalHeight == kNativeHeight,
+              "unrotated logical canvas must match the panel height");
 static_assert(kNativeWidth % 8U == 0,
               "native panel width must be byte aligned");
 

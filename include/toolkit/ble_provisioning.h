@@ -29,7 +29,7 @@ class BleProtocolService {
   static constexpr const char* kTxUuid =
       "f0a40002-0451-4000-b000-000000000001";
   static constexpr uint8_t kProtocolMajor = 4;
-  static constexpr uint8_t kProtocolMinor = 0;
+  static constexpr uint8_t kProtocolMinor = 1;
 
   BleProtocolService(ConfigStore& config_store, ResourceStore& resources,
                      PageRegistry& pages, DisplayManager& display);

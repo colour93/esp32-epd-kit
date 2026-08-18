@@ -45,6 +45,9 @@ epd::ResourceStore g_resources;
 epd::CodexUsagePage g_codex_page;
 epd::HomePage g_home_page;
 epd::HomeThreePage g_home_three_page;
+#if defined(EPD_PANEL_420)
+epd::HomeSixPage g_home_six_page;
+#endif
 epd::PageRegistry g_pages;
 epd::DisplayManager g_display;
 epd::BleProtocolService g_ble(g_config_store, g_resources, g_pages, g_display);
@@ -71,6 +74,9 @@ void registerPages() {
   String error;
   if (!g_pages.add(g_home_page, error) ||
       !g_pages.add(g_home_three_page, error) ||
+#if defined(EPD_PANEL_420)
+      !g_pages.add(g_home_six_page, error) ||
+#endif
       !g_pages.add(g_codex_page, error)) {
     TOOLKIT_LOG("page", String("registry error: ") + error);
   }

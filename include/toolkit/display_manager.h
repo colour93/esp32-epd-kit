@@ -13,7 +13,9 @@ namespace epd {
 
 enum class PresentResult : uint8_t { kNoChange, kPartial, kFull };
 
-#if defined(EPD_PANEL_E029A01)
+#if defined(EPD_PANEL_420)
+using PanelDriver = GxEPD2_420_GDEY042T81;
+#elif defined(EPD_PANEL_E029A01)
 using PanelDriver = GxEPD2_290;
 #else
 using PanelDriver = GxEPD2_213_B74;
@@ -43,6 +45,8 @@ class DisplayManager {
   static constexpr uint16_t kDrawLines = 16;
   static constexpr size_t kDrawBufferBytes =
       8U + hardware::kLogicalStride * kDrawLines;
+  static constexpr size_t kNativeWorkingFrameBytes =
+      hardware::kRotateLogicalToNative ? hardware::kNativeFrameBytes : 1U;
 
   struct RegionFlushTarget {
     DisplayManager* display;
@@ -69,8 +73,8 @@ class DisplayManager {
   uint8_t draw_buffer_[kDrawBufferBytes]{};
   uint8_t region_draw_buffer_[kDrawBufferBytes]{};
   uint8_t frame_[hardware::kLogicalFrameBytes]{};
-  uint8_t native_new_[hardware::kNativeFrameBytes]{};
-  uint8_t native_old_[hardware::kNativeFrameBytes]{};
+  uint8_t native_new_[kNativeWorkingFrameBytes]{};
+  uint8_t native_old_[kNativeWorkingFrameBytes]{};
   uint32_t pending_page_hash_ = 0;
 };
 

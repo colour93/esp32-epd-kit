@@ -201,7 +201,17 @@ Config 使用 `epd_cfg4` 双槽、CRC 和 active marker；资源快照使用 `ep
 
 ## 8. Page、Slot 与 Binding
 
-`capabilities.get.pages[]`：
+Protocol v4.1 起，`capabilities.get` 使用顶层 widget catalog，避免在每个
+slot 中重复完整 widget 元数据。`result.widgets[]`：
+
+```json
+[
+  {"id":"codex.usage.compact","title":"Codex 双窗口","schema_id":"codex.rate_limits","schema_version":1},
+  {"id":"generic.metric.value.1","title":"数值 · 数据 1","schema_id":"generic.metrics","schema_version":1}
+]
+```
+
+`result.pages[]` 的 slot 通过 `widget_ids` 引用 catalog：
 
 ```json
 {
@@ -212,21 +222,21 @@ Config 使用 `epd_cfg4` 双槽、CRC 和 active marker；资源快照使用 `ep
       "id": "primary",
       "status": "active",
       "required": false,
-      "widgets": [
-        {"id":"codex.usage.compact","schema_id":"codex.rate_limits","schema_version":1},
-        {"id":"generic.metric.dual","schema_id":"generic.metrics","schema_version":1},
-        {"id":"generic.metric.value.1","schema_id":"generic.metrics","schema_version":1}
+      "widget_ids": [
+        "codex.usage.compact",
+        "generic.metric.dual",
+        "generic.metric.value.1"
       ]
     },
     {
       "id": "secondary",
       "status": "active",
       "required": false,
-      "widgets": [
-        {"id":"generic.metric.dual","schema_id":"generic.metrics","schema_version":1},
-        {"id":"generic.metric.value.1","schema_id":"generic.metrics","schema_version":1},
-        {"id":"generic.metric.bar.1","schema_id":"generic.metrics","schema_version":1},
-        {"id":"generic.metric.ring.1","schema_id":"generic.metrics","schema_version":1}
+      "widget_ids": [
+        "generic.metric.dual",
+        "generic.metric.value.1",
+        "generic.metric.bar.1",
+        "generic.metric.ring.1"
       ]
     }
   ],

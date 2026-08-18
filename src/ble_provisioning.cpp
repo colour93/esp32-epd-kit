@@ -691,7 +691,24 @@ void BleProtocolService::sendDocument(uint32_t id, MessageKind kind,
   }
   std::string encoded;
   serializeMsgPack(document, encoded);
-  if (encoded.empty() || encoded.size() > kMaxMessageBytes) return;
+  if (encoded.empty()) {
+    TOOLKIT_LOG("ble.tx", String("empty document id=") + id);
+    return;
+  }
+  if (encoded.size() > kMaxMessageBytes) {
+    TOOLKIT_LOG("ble.tx", String("document too large id=") + id +
+                              " bytes=" + encoded.size() +
+                              " limit=" + kMaxMessageBytes);
+    if (kind == MessageKind::kResponse) {
+      JsonDocument fallback;
+      fallback["ok"] = false;
+      fallback["error"]["code"] = "response_too_large";
+      fallback["error"]["message"] = "encoded response exceeds BLE limit";
+      fallback["error"]["retryable"] = false;
+      sendDocument(id, MessageKind::kResponse, fallback);
+    }
+    return;
+  }
   const uint32_t checksum = crc32(
       reinterpret_cast<const uint8_t*>(encoded.data()), encoded.size());
   const size_t gatt_limit = std::max<size_t>(20, mtu > 3 ? mtu - 3 : 20);
@@ -891,6 +908,7 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
     JsonDocument response;
     response["ok"] = true;
     JsonObject result = response["result"].to<JsonObject>();
+    JsonArray widget_catalog = result["widgets"].to<JsonArray>();
     JsonArray pages = result["pages"].to<JsonArray>();
     for (size_t index = 0; index < pages_.size(); ++index) {
       const PageManifest& manifest = pages_.at(index).manifest();
@@ -908,15 +926,25 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
             slot.status == SlotStatus::kActive ? "active" : "reserved";
         slot_json["required"] = slot.required;
         if (slot.status == SlotStatus::kActive) {
-          JsonArray widgets = slot_json["widgets"].to<JsonArray>();
+          JsonArray widget_ids = slot_json["widget_ids"].to<JsonArray>();
           for (size_t widget_index = 0; widget_index < slot.widget_count;
                ++widget_index) {
             const PageWidget& widget = slot.widgets[widget_index];
-            JsonObject widget_json = widgets.add<JsonObject>();
-            widget_json["id"] = widget.id;
-            widget_json["title"] = widget.title;
-            widget_json["schema_id"] = widget.schema_id;
-            widget_json["schema_version"] = widget.schema_version;
+            widget_ids.add(widget.id);
+            bool cataloged = false;
+            for (JsonObjectConst existing : widget_catalog) {
+              if (String(existing["id"].as<const char*>()) == widget.id) {
+                cataloged = true;
+                break;
+              }
+            }
+            if (!cataloged) {
+              JsonObject widget_json = widget_catalog.add<JsonObject>();
+              widget_json["id"] = widget.id;
+              widget_json["title"] = widget.title;
+              widget_json["schema_id"] = widget.schema_id;
+              widget_json["schema_version"] = widget.schema_version;
+            }
           }
         }
       }

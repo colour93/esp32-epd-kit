@@ -17,6 +17,8 @@ constexpr uint8_t displaySpiBus() {
   // ESP32-C3 exposes one general-purpose SPI controller. In the Arduino core
   // it is FSPI (bus 0); HSPI is bus 1 and SPIClass::begin() rejects it.
   return FSPI;
+#elif defined(EPD_PANEL_420)
+  return VSPI;
 #else
   return HSPI;
 #endif
@@ -34,7 +36,11 @@ struct RtcDisplayState {
   uint8_t frame[hardware::kLogicalFrameBytes];
 };
 
+#if defined(EPD_PANEL_420)
+RtcDisplayState g_rtc_display_state{};
+#else
 RTC_DATA_ATTR RtcDisplayState g_rtc_display_state{};
+#endif
 
 void styleScreen(lv_obj_t* root) {
   lv_obj_set_style_bg_color(root, lv_color_white(), 0);
@@ -313,6 +319,10 @@ void DisplayManager::renderFactoryResetConfirmation(uint32_t code,
 }
 
 void DisplayManager::logicalToNative(const uint8_t* logical, uint8_t* native) {
+  if constexpr (!hardware::kRotateLogicalToNative) {
+    memcpy(native, logical, hardware::kNativeFrameBytes);
+    return;
+  }
   memset(native, 0xFF, hardware::kNativeFrameBytes);
   for (uint16_t y = 0; y < hardware::kLogicalHeight; ++y) {
     for (uint16_t x = 0; x < hardware::kLogicalWidth; ++x) {
@@ -328,6 +338,14 @@ void DisplayManager::logicalToNative(const uint8_t* logical, uint8_t* native) {
 
 core::Rect DisplayManager::logicalToNativeRect(const core::Rect& logical) {
   if (logical.empty()) return {};
+  if constexpr (!hardware::kRotateLogicalToNative) {
+    int16_t x1 = logical.x & ~0x7;
+    const int16_t x2 = std::min<int16_t>(
+        hardware::kNativeWidth - 1,
+        static_cast<int16_t>(logical.x + logical.width - 1) | 0x7);
+    return {x1, logical.y, static_cast<int16_t>(x2 - x1 + 1),
+            logical.height};
+  }
   int16_t x1 =
       hardware::kNativeVisibleWidth - (logical.y + logical.height);
   int16_t x2 = hardware::kNativeVisibleWidth - logical.y - 1;
@@ -369,9 +387,22 @@ PresentResult DisplayManager::present(const DisplaySettings& settings,
                              dirty.width + "x" + dirty.height +
                              " partial_count=" +
                              g_rtc_display_state.partial_count);
+#if defined(EPD_PANEL_420) && !defined(EPD_TOOLKIT_RELEASE)
+  size_t black_pixels = 0;
+  for (size_t index = 0; index < sizeof(frame_); ++index) {
+    black_pixels += __builtin_popcount(static_cast<uint8_t>(~frame_[index]));
+  }
+  TOOLKIT_LOG("display", String("frame black_pixels=") + black_pixels);
+#endif
 
-  logicalToNative(frame_, native_new_);
-  if (old_valid) logicalToNative(g_rtc_display_state.frame, native_old_);
+  const uint8_t* native_new = frame_;
+  const uint8_t* native_old = g_rtc_display_state.frame;
+  if constexpr (hardware::kRotateLogicalToNative) {
+    logicalToNative(frame_, native_new_);
+    if (old_valid) logicalToNative(g_rtc_display_state.frame, native_old_);
+    native_new = native_new_;
+    native_old = native_old_;
+  }
 
 #if CONFIG_IDF_TARGET_ESP32C3
   // The AirM2M variant provides the working E029A01 FSPI pin map, including
@@ -382,43 +413,58 @@ PresentResult DisplayManager::present(const DisplaySettings& settings,
   spi_.begin(hardware::kSpiSck, -1, hardware::kSpiMosi, hardware::kEpdCs);
 #endif
   panel_.selectSPI(spi_, SPISettings(4000000, MSBFIRST, SPI_MODE0));
+#if defined(EPD_PANEL_420)
+  pinMode(hardware::kEpdCs, OUTPUT);
+  digitalWrite(hardware::kEpdCs, HIGH);
+  pinMode(hardware::kEpdReset, OUTPUT);
+  digitalWrite(hardware::kEpdReset, HIGH);
+  pinMode(hardware::kEpdDc, OUTPUT);
+  digitalWrite(hardware::kEpdDc, HIGH);
+  pinMode(hardware::kEpdBusy, INPUT);
+#if !defined(EPD_TOOLKIT_RELEASE)
+  panel_.init(115200, false, 10, false);
+#else
+  panel_.init(0, false, 10, false);
+#endif
+#else
   panel_.init(0, full, 10, false);
+#endif
 
   if (full) {
 #if defined(EPD_PANEL_E029A01)
-    panel_.writeImage(native_new_, 0, 0, hardware::kNativeWidth,
+    panel_.writeImage(native_new, 0, 0, hardware::kNativeWidth,
                       hardware::kNativeHeight);
 #else
-    panel_.writeImageForFullRefresh(native_new_, 0, 0, hardware::kNativeWidth,
+    panel_.writeImageForFullRefresh(native_new, 0, 0, hardware::kNativeWidth,
                                     hardware::kNativeHeight);
 #endif
     panel_.refresh(false);
 #if defined(EPD_PANEL_E029A01)
-    panel_.writeImage(native_new_, 0, 0, hardware::kNativeWidth,
+    panel_.writeImage(native_new, 0, 0, hardware::kNativeWidth,
                       hardware::kNativeHeight);
 #else
-    panel_.writeImageAgain(native_new_, 0, 0, hardware::kNativeWidth,
+    panel_.writeImageAgain(native_new, 0, 0, hardware::kNativeWidth,
                            hardware::kNativeHeight);
 #endif
   } else {
     const core::Rect native_dirty = logicalToNativeRect(dirty);
     panel_.writeImagePartToPrevious(
-        native_old_, native_dirty.x, native_dirty.y, hardware::kNativeWidth,
+        native_old, native_dirty.x, native_dirty.y, hardware::kNativeWidth,
         hardware::kNativeHeight, native_dirty.x, native_dirty.y,
         native_dirty.width, native_dirty.height);
-    panel_.writeImagePart(native_new_, native_dirty.x, native_dirty.y,
+    panel_.writeImagePart(native_new, native_dirty.x, native_dirty.y,
                           hardware::kNativeWidth, hardware::kNativeHeight,
                           native_dirty.x, native_dirty.y, native_dirty.width,
                           native_dirty.height);
     panel_.refresh(native_dirty.x, native_dirty.y, native_dirty.width,
                    native_dirty.height);
 #if defined(EPD_PANEL_E029A01)
-    panel_.writeImagePart(native_new_, native_dirty.x, native_dirty.y,
+    panel_.writeImagePart(native_new, native_dirty.x, native_dirty.y,
                           hardware::kNativeWidth, hardware::kNativeHeight,
                           native_dirty.x, native_dirty.y, native_dirty.width,
                           native_dirty.height);
 #else
-    panel_.writeImagePartAgain(native_new_, native_dirty.x, native_dirty.y,
+    panel_.writeImagePartAgain(native_new, native_dirty.x, native_dirty.y,
                                hardware::kNativeWidth, hardware::kNativeHeight,
                                native_dirty.x, native_dirty.y,
                                native_dirty.width, native_dirty.height);

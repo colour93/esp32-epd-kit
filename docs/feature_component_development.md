@@ -469,8 +469,10 @@ Agent/Web：
 构建：
 
 ```bash
-pio run -e esp32dev
-pio run -e esp32dev_release
+pio run -e esp32_2_13
+pio run -e esp32_2_13_release
+pio run -e esp32_4_2
+pio run -e esp32_4_2_release
 cd ../esp32-epd-kit-web/agent && cargo check
 cd .. && bun run build
 ```
