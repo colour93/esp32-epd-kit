@@ -22,8 +22,9 @@ bool parseCode(const String& value, uint32_t& code) {
 }  // namespace
 
 SerialRecoveryConsole::SerialRecoveryConsole(ConfigStore& config_store,
-                                             BleProtocolService& ble)
-    : config_store_(config_store), ble_(ble) {}
+                                             BleProtocolService& ble,
+                                             LanTransport& lan)
+    : config_store_(config_store), ble_(ble), lan_(lan) {}
 
 void SerialRecoveryConsole::begin() {
   Serial.begin(kBaudRate);
@@ -41,6 +42,12 @@ void SerialRecoveryConsole::printHelp() const {
   Serial.println("  status                         show recovery status");
   Serial.println("  setup                          allow a new bonded device for 120s");
   Serial.println("  io12 disable                   disable IO12 and restart");
+  Serial.println("  wifi status                    show WiFi and LAN status");
+  Serial.println("  wifi ssid <value>              save a 2.4 GHz SSID");
+  Serial.println("  wifi password <value>          save WPA password; value is hidden");
+  Serial.println("  wifi apply                     connect using saved credentials");
+  Serial.println("  wifi key                       show the LAN pairing key");
+  Serial.println("  wifi forget                    erase WiFi credentials");
   Serial.println("  restart                        restart the device");
   Serial.println("  factory-reset prepare          create a 30-second code");
   Serial.println("  factory-reset confirm <code>   erase all state and restart");
@@ -72,6 +79,12 @@ void SerialRecoveryConsole::printStatus() const {
                                                                : "mains");
   Serial.printf("free_heap=%lu\n",
                 static_cast<unsigned long>(ESP.getFreeHeap()));
+  Serial.printf("wifi_configured=%s\n", lan_.configured() ? "yes" : "no");
+  Serial.printf("wifi_connected=%s\n", lan_.wifiConnected() ? "yes" : "no");
+  Serial.printf("wifi_ssid=%s\n", lan_.configured() ? lan_.ssid().c_str() : "");
+  Serial.printf("wifi_ip=%s\n", lan_.ipAddress().c_str());
+  Serial.printf("lan_authenticated=%s\n",
+                lan_.authenticated() ? "yes" : "no");
 }
 
 void SerialRecoveryConsole::enterSetup() {
@@ -115,7 +128,8 @@ void SerialRecoveryConsole::disableIo12() {
 void SerialRecoveryConsole::prepareFactoryReset() {
   factory_code_ = 100000U + esp_random() % 900000U;
   factory_deadline_ = millis() + kFactoryConfirmationMs;
-  Serial.println("[WARN] this erases config, resources, owner, and BLE bonds");
+  Serial.println(
+      "[WARN] this erases config, resources, network settings, owner, and BLE bonds");
   Serial.printf("[CONFIRM] run 'factory-reset confirm %06lu' within 30 seconds\n",
                 static_cast<unsigned long>(factory_code_));
 }
@@ -160,6 +174,8 @@ void SerialRecoveryConsole::execute(String line) {
     restart();
   } else if (command == "io12" && lower_arguments == "disable") {
     disableIo12();
+  } else if (command == "wifi") {
+    executeWifi(arguments);
   } else if (command == "factory-reset" && lower_arguments == "prepare") {
     prepareFactoryReset();
   } else if (command == "factory-reset" &&
@@ -170,6 +186,63 @@ void SerialRecoveryConsole::execute(String line) {
   } else {
     Serial.println("[FAIL] unknown command or wrong arguments; run: help");
   }
+}
+
+void SerialRecoveryConsole::executeWifi(const String& arguments) {
+  const int separator = arguments.indexOf(' ');
+  String action = separator < 0 ? arguments : arguments.substring(0, separator);
+  String value = separator < 0 ? String() : arguments.substring(separator + 1);
+  action.toLowerCase();
+  value.trim();
+  if (action == "status" && value.isEmpty()) {
+    Serial.printf("configured=%s\n", lan_.configured() ? "yes" : "no");
+    Serial.printf("connected=%s\n", lan_.wifiConnected() ? "yes" : "no");
+    Serial.printf("ssid=%s\n", lan_.configured() ? lan_.ssid().c_str() : "");
+    Serial.printf("ip=%s\n", lan_.ipAddress().c_str());
+    Serial.printf("rssi=%ld\n", static_cast<long>(lan_.rssi()));
+    Serial.printf("device_id=%s\n", lan_.deviceId().c_str());
+    Serial.printf("lan_client=%s\n", lan_.authenticated() ? "yes" : "no");
+    return;
+  }
+  if (action == "key" && value.isEmpty()) {
+    Serial.printf("device_id=%s\n", lan_.deviceId().c_str());
+    Serial.printf("device_key=%s\n", lan_.deviceKeyHex().c_str());
+    return;
+  }
+  String error;
+  if (action == "ssid") {
+    if (!lan_.setSsid(value, error)) {
+      Serial.printf("[FAIL] %s\n", error.c_str());
+      return;
+    }
+    Serial.println("[OK] WiFi SSID saved; run: wifi apply");
+    return;
+  }
+  if (action == "password") {
+    if (!lan_.setPassword(value, error)) {
+      Serial.printf("[FAIL] %s\n", error.c_str());
+      return;
+    }
+    Serial.println("[OK] WiFi password saved; run: wifi apply");
+    return;
+  }
+  if (action == "apply" && value.isEmpty()) {
+    if (!lan_.apply(error)) {
+      Serial.printf("[FAIL] %s\n", error.c_str());
+      return;
+    }
+    Serial.println("[OK] WiFi connection started");
+    return;
+  }
+  if (action == "forget" && value.isEmpty()) {
+    if (!lan_.forget(error)) {
+      Serial.printf("[FAIL] %s\n", error.c_str());
+      return;
+    }
+    Serial.println("[OK] WiFi credentials erased; LAN pairing key retained");
+    return;
+  }
+  Serial.println("[FAIL] unknown wifi command; run: help");
 }
 
 void SerialRecoveryConsole::loop() {

@@ -77,6 +77,69 @@ BleProtocolService::BleProtocolService(ConfigStore& config_store,
 
 BleProtocolService::~BleProtocolService() { stop(); }
 
+bool BleProtocolService::connected() const {
+  return connected_.load() ||
+         (external_transport_ != nullptr && external_transport_->connected());
+}
+
+bool BleProtocolService::authenticated() const {
+  return authenticated_.load() ||
+         (external_transport_ != nullptr &&
+          external_transport_->authenticated());
+}
+
+void BleProtocolService::attachTransport(ProtocolTransport& transport) {
+  external_transport_ = &transport;
+}
+
+void BleProtocolService::transportConnected(ProtocolTransport& transport) {
+  if (external_transport_ != &transport) external_transport_ = &transport;
+  if (connected_ && server_ != nullptr) {
+    server_->disconnect(connection_handle_);
+  }
+  {
+    const std::lock_guard<std::mutex> lock(rx_mutex_);
+    external_assembly_.clear();
+    pending_requests_.clear();
+    ++external_connection_generation_;
+  }
+  staged_ = current_;
+  connection_render_requested_ = true;
+  TOOLKIT_LOG("transport", String(transport.name()) + " connected");
+}
+
+void BleProtocolService::transportDisconnected(ProtocolTransport& transport) {
+  if (external_transport_ != &transport) return;
+  {
+    const std::lock_guard<std::mutex> lock(rx_mutex_);
+    external_assembly_.clear();
+    pending_requests_.clear();
+    ++external_connection_generation_;
+  }
+  staged_ = current_;
+  connection_render_requested_ = !owner_address_.isEmpty();
+  TOOLKIT_LOG("transport", String(transport.name()) + " disconnected");
+}
+
+void BleProtocolService::receiveTransportFrame(ProtocolTransport& transport,
+                                                const uint8_t* data,
+                                                size_t length) {
+  if (external_transport_ != &transport || !transport.connected() ||
+      !transport.authenticated()) {
+    TOOLKIT_LOG("security", "rejected unauthenticated external frame");
+    return;
+  }
+  if (current_.power.profile == PowerProfile::kBattery &&
+      !owner_address_.isEmpty()) {
+    const std::lock_guard<std::mutex> lock(tx_mutex_);
+    battery_awake_deadline_ = millis() + kBatteryAwakeTimeoutMs;
+    sleep_requested_ = false;
+  }
+  const std::lock_guard<std::mutex> lock(rx_mutex_);
+  acceptFrame(ProtocolTransportKind::kLan, external_connection_generation_,
+              external_assembly_, data, length);
+}
+
 uint16_t BleProtocolService::readU16(const uint8_t* value) {
   return static_cast<uint16_t>(value[0]) |
          static_cast<uint16_t>(value[1]) << 8U;
@@ -166,6 +229,11 @@ bool BleProtocolService::isKnownBond(const String& address) const {
 }
 
 bool BleProtocolService::isOwner() const {
+  if (request_in_progress_ &&
+      request_transport_ == ProtocolTransportKind::kLan) {
+    return external_transport_ != nullptr &&
+           external_transport_->authenticated() && external_transport_->owner();
+  }
   return authenticated_ && !owner_address_.isEmpty() &&
          peer_address_ == owner_address_;
 }
@@ -325,6 +393,9 @@ bool BleProtocolService::begin(const DeviceConfig& config, uint16_t battery_mv,
 }
 
 void BleProtocolService::onConnect(NimBLEConnInfo& connection) {
+  if (external_transport_ != nullptr && external_transport_->connected()) {
+    external_transport_->disconnect();
+  }
   const uint16_t connection_handle = connection.getConnHandle();
   authenticated_ = connection.isEncrypted() && connection.isAuthenticated();
   peer_address_ = "";
@@ -536,15 +607,22 @@ void BleProtocolService::onWrite(NimBLECharacteristic* characteristic,
   }
   const std::string value = characteristic->getValue();
   const std::lock_guard<std::mutex> lock(rx_mutex_);
-  if (value.size() < kFrameHeaderBytes) {
-    queueErrorLocked(connection_generation, 0, "invalid_frame",
+  acceptFrame(ProtocolTransportKind::kBle, connection_generation, assembly_,
+              reinterpret_cast<const uint8_t*>(value.data()), value.size());
+}
+
+void BleProtocolService::acceptFrame(ProtocolTransportKind transport,
+                                     uint32_t connection_generation,
+                                     Assembly& assembly, const uint8_t* bytes,
+                                     size_t length) {
+  if (length < kFrameHeaderBytes) {
+    queueErrorLocked(transport, connection_generation, 0, "invalid_frame",
                      "frame header is incomplete");
     return;
   }
-  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(value.data());
   if (bytes[0] != kFrameMagic ||
       (bytes[1] & kFlagKindMask) != static_cast<uint8_t>(MessageKind::kRequest)) {
-    queueErrorLocked(connection_generation, 0, "invalid_frame",
+    queueErrorLocked(transport, connection_generation, 0, "invalid_frame",
                      "frame magic or kind is invalid");
     return;
   }
@@ -553,80 +631,83 @@ void BleProtocolService::onWrite(NimBLECharacteristic* characteristic,
   const uint16_t sequence = readU16(bytes + 6);
   size_t offset = kFrameHeaderBytes;
   const uint32_t now = millis();
-  if (assembly_.active && now - assembly_.started_at > kAssemblyTimeoutMs) {
-    assembly_.clear();
-    queueErrorLocked(connection_generation, id, "invalid_frame",
+  if (assembly.active && now - assembly.started_at > kAssemblyTimeoutMs) {
+    assembly.clear();
+    queueErrorLocked(transport, connection_generation, id, "invalid_frame",
                      "message assembly timed out", true);
     return;
   }
   if ((flags & kFlagStart) != 0) {
-    if (sequence != 0 || value.size() < kFrameHeaderBytes + kStartMetadataBytes) {
-      queueErrorLocked(connection_generation, id, "invalid_frame",
+    if (sequence != 0 || length < kFrameHeaderBytes + kStartMetadataBytes) {
+      queueErrorLocked(transport, connection_generation, id, "invalid_frame",
                        "start frame metadata is invalid");
       return;
     }
-    assembly_.clear();
-    assembly_.active = true;
-    assembly_.id = id;
-    assembly_.next_sequence = 0;
-    assembly_.total_length = readU16(bytes + offset);
-    assembly_.expected_crc = readU32(bytes + offset + 2);
-    assembly_.started_at = now;
+    assembly.clear();
+    assembly.active = true;
+    assembly.id = id;
+    assembly.next_sequence = 0;
+    assembly.total_length = readU16(bytes + offset);
+    assembly.expected_crc = readU32(bytes + offset + 2);
+    assembly.started_at = now;
     offset += kStartMetadataBytes;
-    if (assembly_.total_length == 0 ||
-        assembly_.total_length > kMaxMessageBytes) {
-      assembly_.clear();
-      queueErrorLocked(connection_generation, id, "too_large",
+    if (assembly.total_length == 0 ||
+        assembly.total_length > kMaxMessageBytes) {
+      assembly.clear();
+      queueErrorLocked(transport, connection_generation, id, "too_large",
                        "message length is outside supported limits");
       return;
     }
-    assembly_.payload.reserve(assembly_.total_length);
+    assembly.payload.reserve(assembly.total_length);
   }
-  if (!assembly_.active || assembly_.id != id ||
-      sequence != assembly_.next_sequence) {
-    assembly_.clear();
-    queueErrorLocked(connection_generation, id, "invalid_frame",
+  if (!assembly.active || assembly.id != id ||
+      sequence != assembly.next_sequence) {
+    assembly.clear();
+    queueErrorLocked(transport, connection_generation, id, "invalid_frame",
                      "fragment sequence is not contiguous", true);
     return;
   }
-  ++assembly_.next_sequence;
-  const size_t chunk_length = value.size() - offset;
-  if (assembly_.payload.size() + chunk_length > assembly_.total_length) {
-    assembly_.clear();
-    queueErrorLocked(connection_generation, id, "too_large",
+  ++assembly.next_sequence;
+  const size_t chunk_length = length - offset;
+  if (assembly.payload.size() + chunk_length > assembly.total_length) {
+    assembly.clear();
+    queueErrorLocked(transport, connection_generation, id, "too_large",
                      "fragment exceeds declared message length");
     return;
   }
-  assembly_.payload.insert(assembly_.payload.end(), bytes + offset,
-                           bytes + value.size());
+  assembly.payload.insert(assembly.payload.end(), bytes + offset,
+                          bytes + length);
   if ((flags & kFlagEnd) == 0) return;
-  if (assembly_.payload.size() != assembly_.total_length ||
-      crc32(assembly_.payload.data(), assembly_.payload.size()) !=
-          assembly_.expected_crc) {
-    assembly_.clear();
-    queueErrorLocked(connection_generation, id, "invalid_frame",
+  if (assembly.payload.size() != assembly.total_length ||
+      crc32(assembly.payload.data(), assembly.payload.size()) !=
+          assembly.expected_crc) {
+    assembly.clear();
+    queueErrorLocked(transport, connection_generation, id, "invalid_frame",
                      "message length or CRC does not match", true);
     return;
   }
   if (pending_requests_.size() >= kMaxPendingRequests) {
-    assembly_.clear();
+    assembly.clear();
     return;
   }
   PendingRequest pending;
   pending.id = id;
   pending.connection_generation = connection_generation;
-  pending.payload = std::move(assembly_.payload);
-  assembly_.clear();
+  pending.transport = transport;
+  pending.payload = std::move(assembly.payload);
+  assembly.clear();
   pending_requests_.push_back(std::move(pending));
 }
 
-void BleProtocolService::queueErrorLocked(uint32_t connection_generation,
+void BleProtocolService::queueErrorLocked(ProtocolTransportKind transport,
+                                          uint32_t connection_generation,
                                           uint32_t id, const char* code,
                                           const char* message, bool retryable) {
   if (pending_requests_.size() >= kMaxPendingRequests) return;
   PendingRequest pending;
   pending.id = id;
   pending.connection_generation = connection_generation;
+  pending.transport = transport;
   pending.error_code = code;
   pending.error_message = message;
   pending.retryable = retryable;
@@ -658,12 +739,23 @@ void BleProtocolService::processPendingRequest() {
     pending = std::move(pending_requests_.front());
     pending_requests_.pop_front();
   }
-  {
-    const std::lock_guard<std::mutex> lock(tx_mutex_);
-    if (!connected_ || pending.connection_generation != connection_generation_) return;
+  if (pending.transport == ProtocolTransportKind::kBle) {
+    {
+      const std::lock_guard<std::mutex> lock(tx_mutex_);
+      if (!connected_ ||
+          pending.connection_generation != connection_generation_) {
+        return;
+      }
+    }
+    refreshAuthenticatedPeer();
+  } else if (external_transport_ == nullptr ||
+             !external_transport_->connected() ||
+             !external_transport_->authenticated() ||
+             pending.connection_generation != external_connection_generation_) {
+    return;
   }
-  refreshAuthenticatedPeer();
   request_in_progress_ = true;
+  request_transport_ = pending.transport;
   request_connection_generation_ = pending.connection_generation;
   if (pending.error_code != nullptr) {
     sendError(pending.id, pending.error_code, pending.error_message,
@@ -672,53 +764,88 @@ void BleProtocolService::processPendingRequest() {
     processRequest(pending.id, pending.payload.data(), pending.payload.size());
   }
   request_in_progress_ = false;
+  request_transport_ = ProtocolTransportKind::kBle;
   request_connection_generation_ = 0;
 }
 
 void BleProtocolService::sendDocument(uint32_t id, MessageKind kind,
                                       JsonDocument& document) {
-  uint16_t mtu = 23;
+  if (kind == MessageKind::kResponse && request_in_progress_) {
+    sendDocumentTo(request_transport_, id, kind, document);
+    return;
+  }
+  bool sent = false;
+  if (external_transport_ != nullptr && external_transport_->connected() &&
+      external_transport_->authenticated()) {
+    sendDocumentTo(ProtocolTransportKind::kLan, id, kind, document);
+    sent = true;
+  }
+  if (connected_ && authenticated_) {
+    sendDocumentTo(ProtocolTransportKind::kBle, id, kind, document);
+    sent = true;
+  }
+  if (!sent) {
+    TOOLKIT_LOG("transport.tx", String("no session for document id=") + id);
+  }
+}
+
+void BleProtocolService::sendDocumentTo(ProtocolTransportKind transport,
+                                        uint32_t id, MessageKind kind,
+                                        JsonDocument& document) {
+  size_t frame_limit = 20;
   uint32_t connection_generation = 0;
-  {
+  if (transport == ProtocolTransportKind::kBle) {
     const std::lock_guard<std::mutex> lock(tx_mutex_);
     if (!connected_ || tx_ == nullptr) return;
     if (kind == MessageKind::kResponse && request_in_progress_ &&
-        request_connection_generation_ != connection_generation_) {
+        (request_transport_ != ProtocolTransportKind::kBle ||
+         request_connection_generation_ != connection_generation_)) {
       return;
     }
-    mtu = mtu_;
+    frame_limit = std::max<size_t>(20, mtu_ > 3 ? mtu_ - 3 : 20);
     connection_generation = connection_generation_;
+  } else {
+    if (external_transport_ == nullptr || !external_transport_->connected() ||
+        !external_transport_->authenticated()) {
+      return;
+    }
+    if (kind == MessageKind::kResponse && request_in_progress_ &&
+        (request_transport_ != ProtocolTransportKind::kLan ||
+         request_connection_generation_ != external_connection_generation_)) {
+      return;
+    }
+    frame_limit = std::max<size_t>(20, external_transport_->frameBytes());
+    connection_generation = external_connection_generation_;
   }
   std::string encoded;
   serializeMsgPack(document, encoded);
   if (encoded.empty()) {
-    TOOLKIT_LOG("ble.tx", String("empty document id=") + id);
+    TOOLKIT_LOG("transport.tx", String("empty document id=") + id);
     return;
   }
   if (encoded.size() > kMaxMessageBytes) {
-    TOOLKIT_LOG("ble.tx", String("document too large id=") + id +
-                              " bytes=" + encoded.size() +
-                              " limit=" + kMaxMessageBytes);
+    TOOLKIT_LOG("transport.tx", String("document too large id=") + id +
+                                    " bytes=" + encoded.size() +
+                                    " limit=" + kMaxMessageBytes);
     if (kind == MessageKind::kResponse) {
       JsonDocument fallback;
       fallback["ok"] = false;
       fallback["error"]["code"] = "response_too_large";
-      fallback["error"]["message"] = "encoded response exceeds BLE limit";
+      fallback["error"]["message"] = "encoded response exceeds protocol limit";
       fallback["error"]["retryable"] = false;
-      sendDocument(id, MessageKind::kResponse, fallback);
+      sendDocumentTo(transport, id, MessageKind::kResponse, fallback);
     }
     return;
   }
   const uint32_t checksum = crc32(
       reinterpret_cast<const uint8_t*>(encoded.data()), encoded.size());
-  const size_t gatt_limit = std::max<size_t>(20, mtu > 3 ? mtu - 3 : 20);
   std::vector<std::vector<uint8_t>> frames;
   uint16_t sequence = 0;
   size_t payload_offset = 0;
   do {
     const bool start = sequence == 0;
     const size_t metadata = start ? kStartMetadataBytes : 0;
-    const size_t capacity = gatt_limit - kFrameHeaderBytes - metadata;
+    const size_t capacity = frame_limit - kFrameHeaderBytes - metadata;
     const size_t chunk = std::min(capacity, encoded.size() - payload_offset);
     const bool end = payload_offset + chunk == encoded.size();
     std::vector<uint8_t> frame(kFrameHeaderBytes + metadata + chunk);
@@ -741,6 +868,20 @@ void BleProtocolService::sendDocument(uint32_t id, MessageKind kind,
     payload_offset += chunk;
     ++sequence;
   } while (payload_offset < encoded.size());
+  if (transport == ProtocolTransportKind::kLan) {
+    if (external_transport_ == nullptr ||
+        external_connection_generation_ != connection_generation) {
+      return;
+    }
+    for (const std::vector<uint8_t>& frame : frames) {
+      if (!external_transport_->sendFrame(frame.data(), frame.size())) {
+        TOOLKIT_LOG("transport.tx", "LAN frame send failed");
+        external_transport_->disconnect();
+        return;
+      }
+    }
+    return;
+  }
   {
     const std::lock_guard<std::mutex> lock(tx_mutex_);
     if (!connected_ || tx_ == nullptr ||
@@ -807,14 +948,20 @@ void BleProtocolService::sendSimpleEvent(const char* name) {
 }
 
 bool BleProtocolService::requireTrusted(uint32_t id) {
+  if (request_in_progress_ &&
+      request_transport_ == ProtocolTransportKind::kLan &&
+      external_transport_ != nullptr &&
+      external_transport_->authenticated()) {
+    return true;
+  }
   if (authenticated_ && isKnownBond(peer_address_)) return true;
-  sendError(id, "unauthorized", "a trusted bond is required");
+  sendError(id, "unauthorized", "an authenticated device session is required");
   return false;
 }
 
 bool BleProtocolService::requireOwner(uint32_t id) {
   if (isOwner()) return true;
-  sendError(id, "forbidden", "the owner bond is required");
+  sendError(id, "forbidden", "an owner device session is required");
   return false;
 }
 
@@ -841,7 +988,13 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
     result["firmware"] = EPD_TOOLKIT_VERSION;
     result["device_name"] = deviceName();
     result["max_message_bytes"] = kMaxMessageBytes;
-    result["mtu"] = mtu_;
+    result["mtu"] = request_transport_ == ProtocolTransportKind::kLan &&
+                             external_transport_ != nullptr
+                         ? external_transport_->frameBytes()
+                         : mtu_;
+    result["transport"] = request_transport_ == ProtocolTransportKind::kLan
+                              ? "lan"
+                              : "ble";
     result["role"] = isOwner() ? "owner" : "trusted";
     result["power_profile"] =
         current_.power.profile == PowerProfile::kBattery ? "battery" : "mains";
@@ -855,13 +1008,16 @@ void BleProtocolService::processRequest(uint32_t id, const uint8_t* payload,
     response["ok"] = true;
     JsonObject result = response["result"].to<JsonObject>();
     result["uptime_ms"] = millis();
-    result["connected"] = connected_.load();
-    result["authenticated"] = authenticated_.load();
+    result["connected"] = connected();
+    result["authenticated"] = authenticated();
     result["owner"] = isOwner();
     result["config_revision"] = current_.revision;
     result["resource_count"] = resources_.size();
     result["page_id"] = current_.page.id;
-    result["mtu"] = mtu_;
+    result["mtu"] = request_transport_ == ProtocolTransportKind::kLan &&
+                             external_transport_ != nullptr
+                         ? external_transport_->frameBytes()
+                         : mtu_;
     result["free_heap"] = ESP.getFreeHeap();
     sendDocument(id, MessageKind::kResponse, response);
     return;
@@ -1473,6 +1629,11 @@ void BleProtocolService::loop() {
       assembly_.clear();
       TOOLKIT_LOG("ble.rpc", "message assembly expired");
     }
+    if (external_assembly_.active &&
+        millis() - external_assembly_.started_at > kAssemblyTimeoutMs) {
+      external_assembly_.clear();
+      TOOLKIT_LOG("transport.rpc", "external message assembly expired");
+    }
   }
 }
 
@@ -1518,6 +1679,7 @@ void BleProtocolService::stop() {
     assembly_.clear();
     pending_requests_.clear();
   }
+  external_transport_ = nullptr;
   TOOLKIT_LOG("ble", "BLE service stopped");
 }
 

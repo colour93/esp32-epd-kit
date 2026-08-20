@@ -1,13 +1,16 @@
 # ESP32 E-Paper Toolkit
 
-Waveshare 2.13inch e-Paper Cloud Module V4 的 BLE-only 固件。固件 `0.3.x` 使用 BLE Protocol v4 接收版本化语义 Resource，并由 Page 编排多个 Resource Slot 与可复用 Widget。
+Waveshare E-Paper ESP32 固件。固件 `0.3.x` 使用 Protocol v4 接收版本化语义 Resource，并由 Page 编排多个 Resource Slot 与可复用 Widget；主机既可通过 BLE 连接，也可先用 USB-TTL 串口配置 WiFi，再通过局域网连接。
 
 ```text
-Desktop Agent -> BLE v4 -> ResourceStore -> PageResources -> Model -> Widget
+Desktop Agent -> DeviceGateway -> BLE ---------+
+                              -> WiFi / TCP ----+-> Protocol v4 -> ResourceStore
+USB-TTL ------------------------> WiFi 配置                         |
+                                      PageResources -> Model -> Widget
                                       RuntimeContext -------> Timed Region
 ```
 
-ESP32 不连接 Wi-Fi 或云服务，也不保存 Codex、CLI 或其他服务凭据。
+ESP32 不访问云服务，也不保存 Codex、CLI 或其他服务凭据。配置 WiFi 后只在本地网络提供经设备密钥认证的 TCP 服务。
 
 ## 当前功能
 
@@ -17,7 +20,9 @@ ESP32 不连接 Wi-Fi 或云服务，也不保存 Codex、CLI 或其他服务凭
 - Resource missing/invalid/stale/fresh 状态；
 - framebuffer diff、dirty rect、局刷/全刷策略和无变化抑制；
 - 电池模式时钟 RTC 快路径，不启动 BLE、不加载 Resource snapshot；
-- LE Secure Connections、MITM、bonding、owner/trusted 权限。
+- LE Secure Connections、MITM、bonding、owner/trusted 权限；
+- USB-TTL 串口配网、`_epdkit._tcp.local.` mDNS 发现与 HMAC-SHA256 LAN 认证；
+- BLE/LAN 共用 Protocol v4 RPC，且任一时刻只允许一个活动会话。
 
 默认配置使用 `home`，绑定 `primary -> codex/default`。全刷策略为 60 次局刷、24 小时或 70% dirty area。
 
@@ -121,6 +126,12 @@ pio device monitor -b 115200
 status
 setup
 io12 disable
+wifi status
+wifi ssid <value>
+wifi password <value>
+wifi apply
+wifi key
+wifi forget
 restart
 factory-reset prepare
 factory-reset confirm <code>
@@ -128,12 +139,22 @@ factory-reset confirm <code>
 
 `setup` 通过物理串口打开 120 秒新主机绑定窗口，屏幕进入配置模式，串口同时输出六位 BLE passkey。窗口期间设备保持快速广播；Windows Agent 若检测到本机残留的陈旧配对，会在首次安全握手失败后自动重新配对。
 
-Factory reset 清除 v4 配置、资源、安全状态和全部 BLE bonds。GPIO12 同时是 ESP32 boot-strapping pin；若硬件持续拉高导致设备无法启动，需先修复电路或复位时拉低 GPIO12。
+不支持 BLE 的主机按以下顺序配置：
+
+1. 使用 **3.3V 电平** USB-TTL 连接设备 TX/RX/GND，以 `115200 8N1` 打开串口；
+2. 执行 `wifi ssid <SSID>`、`wifi password <密码>` 和 `wifi apply`；开放网络可执行空值的 `wifi password`；
+3. 用 `wifi status` 确认 IP，用 `wifi key` 读取 `device_id` 与 64 位 `device_key`；
+4. 在 Agent 工作台选择 WiFi，扫描 `_epdkit._tcp.local.`，首次连接时输入 `device_key`。
+
+LAN 服务固定监听 TCP `38474`，mDNS TXT 包含 `id`、`name`、`proto=4` 和 `fw`。USB-TTL 只负责首次配网和恢复，日常数据传输走 WiFi。配置 WiFi 会增加常驻功耗，电池配置应结合唤醒周期评估。
+
+Factory reset 清除 v4 配置、资源、WiFi/LAN 密钥、安全状态和全部 BLE bonds；`wifi forget` 只清除 WiFi SSID/密码，保留 LAN 设备密钥。GPIO12 同时是 ESP32 boot-strapping pin；若硬件持续拉高导致设备无法启动，需先修复电路或复位时拉低 GPIO12。
 
 ## 权威文档
 
 - [v4 架构](docs/architecture_v4.md)
 - [BLE Protocol v4 Host Implementation Guide](docs/ble_protocol_v4.md)
+- [LAN Transport for Protocol v4](docs/lan_transport_v4.md)
 - [功能组件开发规范](docs/feature_component_development.md)
 - [Codex Rate Limits Schema 与 Producer](docs/openai_codex_usage.md)
 - [通用 CLI + JMESPath 数据源](docs/generic_cli.md)

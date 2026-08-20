@@ -7,9 +7,11 @@
 v4 把页面、数据源和绘制组件解耦：
 
 ```text
-数据源实例 -> 数据源类型/Producer -> SemanticResource -> ResourcePublisher -> BLE v4
-                                                            |
-                                                            v
+数据源实例 -> 数据源类型/Producer -> SemanticResource -> ResourcePublisher -> DeviceGateway
+                                                                            |-> BLE
+                                                                            +-> LAN/TCP
+                                                                                 |
+                                                                                 v
 ResourceStore -> Page Binding -> PageResources -> Model -> Widget
                                       ^                       |
                                       |                       v
@@ -36,7 +38,8 @@ RuntimeContext -----------------------+--------------------> LVGL -> EPD
 | Widget | 在稳定 bounds 内绘制 Model | 读取 Resource、调度刷新 |
 | Page | 声明 manifest，组合 Widget 和错误态 | 遍历 ResourceStore |
 | `DisplayManager` | LVGL target、frame diff、局刷/全刷、RTC frame | 数据采集 |
-| `BleProtocolService` | v4 分帧、RPC、权限、配置和事件 | 访问云服务 |
+| Protocol service | transport-neutral v4 分帧、RPC、权限、配置和事件 | 访问云服务 |
+| `LanTransport` | WiFi station、mDNS、TCP 边界和 HMAC 认证 | 业务 RPC、云访问 |
 
 Page manifest 包含 active/reserved slots 与 timed regions。active slot 精确声明 schema ID/version；reserved slot 不可绑定。`PageSettings` 只保存 Page ID 与 slot 到 resource key 的映射。
 
@@ -47,16 +50,19 @@ Page manifest 包含 active/reserved slots 与 timed regions。active slot 精�
 | `SourceType` / `Producer` | 数据源类型定义、认证、采集和字段投影 |
 | `Source` | 具有稳定 ID、类型 ID、配置、状态和资源键的数据实例 |
 | `ProducerRegistry` | 编译期注册类型、重复 ID 拒绝、按类型刷新、auto-sync 集合 |
-| `ResourcePublisher` | revision、语义 hash、300 秒 heartbeat、重连 reconcile、串行 BLE 写 |
+| `ResourcePublisher` | revision、语义 hash、300 秒 heartbeat、重连 reconcile、串行设备写 |
 | `SyncCoordinator` | battery 自动连接的 cycle 生命周期和唯一 `system.sync.complete` 调用 |
-| `BleGateway` | 扫描、目标恢复、配对、v4 RPC 串行化和状态 reload |
+| `DeviceGateway` | BLE/LAN 适配器切换、单活动传输和统一设备 RPC/事件 |
+| `BleGateway` | BLE 扫描、目标恢复、系统配对与 frame channel |
+| `LanGateway` | mDNS 发现、TCP/HMAC 认证、系统凭据与 frame channel |
+| shared RPC | transport-neutral request 编码、response assembly 与事件分发 |
 | `SharedState` | `source_types[]`、`sources[]`、设备状态、日志和 SSE snapshot |
 
 Producer 发布的 `SemanticResource` 不含 `revision` 或 `updated_at`。这两个字段只由 Publisher 在写设备时生成。Producer 不直接调用 `resource.put`、`resource.list` 或 `system.sync.complete`。
 
 ### 2.3 Web
 
-React 只访问 Agent 的 loopback HTTP/SSE，不使用 Web Bluetooth，也不直接访问云服务。
+React 只访问 Agent 的 loopback HTTP/SSE，不使用 Web Bluetooth、不直接打开 LAN socket，也不直接访问云服务。
 
 - `capabilities.pages` 动态生成 Page/Slot/Binding 表单；
 - active slot 只显示 schema/version 精确匹配的 Resource；

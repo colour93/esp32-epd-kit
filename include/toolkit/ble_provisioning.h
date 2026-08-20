@@ -20,6 +20,20 @@ namespace epd {
 class ToolkitServerCallbacks;
 class ToolkitCharacteristicCallbacks;
 
+enum class ProtocolTransportKind : uint8_t { kBle = 0, kLan = 1 };
+
+class ProtocolTransport {
+ public:
+  virtual ~ProtocolTransport() = default;
+  virtual const char* name() const = 0;
+  virtual bool connected() const = 0;
+  virtual bool authenticated() const = 0;
+  virtual bool owner() const = 0;
+  virtual size_t frameBytes() const = 0;
+  virtual bool sendFrame(const uint8_t* data, size_t length) = 0;
+  virtual void disconnect() = 0;
+};
+
 class BleProtocolService {
  public:
   static constexpr const char* kServiceUuid =
@@ -43,9 +57,14 @@ class BleProtocolService {
   void updateBattery(uint16_t battery_mv);
   void emitDisplayStarted(bool full);
   void emitDisplayCompleted(const char* result);
+  void attachTransport(ProtocolTransport& transport);
+  void transportConnected(ProtocolTransport& transport);
+  void transportDisconnected(ProtocolTransport& transport);
+  void receiveTransportFrame(ProtocolTransport& transport,
+                             const uint8_t* data, size_t length);
 
-  bool connected() const { return connected_.load(); }
-  bool authenticated() const { return authenticated_.load(); }
+  bool connected() const;
+  bool authenticated() const;
   bool sessionReady() const { return connected() && authenticated(); }
   bool owned() const { return !owner_address_.isEmpty(); }
   bool takeRenderRequest(bool& force_full);
@@ -90,6 +109,7 @@ class BleProtocolService {
   struct PendingRequest {
     uint32_t id = 0;
     uint32_t connection_generation = 0;
+    ProtocolTransportKind transport = ProtocolTransportKind::kBle;
     std::vector<uint8_t> payload;
     const char* error_code = nullptr;
     const char* error_message = nullptr;
@@ -119,13 +139,19 @@ class BleProtocolService {
   void onMtuChange(uint16_t mtu, NimBLEConnInfo& connection);
   void onIndicationStatus(int status);
   void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& connection);
+  void acceptFrame(ProtocolTransportKind transport,
+                   uint32_t connection_generation, Assembly& assembly,
+                   const uint8_t* data, size_t length);
   void processRequest(uint32_t id, const uint8_t* payload, size_t length);
   void sendDocument(uint32_t id, MessageKind kind, JsonDocument& document);
+  void sendDocumentTo(ProtocolTransportKind transport, uint32_t id,
+                      MessageKind kind, JsonDocument& document);
   void sendError(uint32_t id, const char* code, const String& message,
                  bool retryable = false);
   void sendEvent(const char* name, JsonVariantConst data = JsonVariantConst());
   void sendSimpleEvent(const char* name);
-  void queueErrorLocked(uint32_t connection_generation, uint32_t id,
+  void queueErrorLocked(ProtocolTransportKind transport,
+                        uint32_t connection_generation, uint32_t id,
                         const char* code, const char* message,
                         bool retryable = false);
   void processPendingRequest();
@@ -162,6 +188,7 @@ class BleProtocolService {
   ToolkitServerCallbacks* server_callbacks_ = nullptr;
   ToolkitCharacteristicCallbacks* characteristic_callbacks_ = nullptr;
   Assembly assembly_;
+  Assembly external_assembly_;
   std::mutex rx_mutex_;
   std::deque<PendingRequest> pending_requests_;
   std::mutex tx_mutex_;
@@ -180,6 +207,7 @@ class BleProtocolService {
   uint32_t tx_retry_at_ = 0;
   uint32_t connection_generation_ = 0;
   uint32_t request_connection_generation_ = 0;
+  uint32_t external_connection_generation_ = 0;
   uint16_t mtu_ = 23;
   uint16_t connection_handle_ = BLE_HS_CONN_HANDLE_NONE;
   int16_t utc_offset_minutes_ = 0;
@@ -189,6 +217,8 @@ class BleProtocolService {
   std::atomic_bool connection_render_requested_{false};
   std::atomic_bool setup_render_requested_{false};
   bool request_in_progress_ = false;
+  ProtocolTransportKind request_transport_ = ProtocolTransportKind::kBle;
+  ProtocolTransport* external_transport_ = nullptr;
   bool tx_waiting_for_ack_ = false;
   uint8_t tx_send_attempts_ = 0;
   bool render_requested_ = false;

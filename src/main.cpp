@@ -19,6 +19,7 @@
 #include "toolkit/display_manager.h"
 #include "toolkit/hardware.h"
 #include "toolkit/home_page.h"
+#include "toolkit/lan_transport.h"
 #include "toolkit/log.h"
 #include "toolkit/resource_store.h"
 #include "toolkit/serial_recovery.h"
@@ -51,7 +52,8 @@ epd::HomeSixPage g_home_six_page;
 epd::PageRegistry g_pages;
 epd::DisplayManager g_display;
 epd::BleProtocolService g_ble(g_config_store, g_resources, g_pages, g_display);
-epd::SerialRecoveryConsole g_serial(g_config_store, g_ble);
+epd::LanTransport g_lan(g_ble);
+epd::SerialRecoveryConsole g_serial(g_config_store, g_ble, g_lan);
 
 uint16_t g_battery_mv = 0;
 uint32_t g_last_battery_sample = 0;
@@ -241,6 +243,7 @@ bool tryBatteryTimedFastPath(const epd::DeviceConfig& config) {
 [[noreturn]] void enterCriticalSleep(const epd::DeviceConfig& config) {
   TOOLKIT_LOG("power", String("critical battery ") + g_battery_mv +
                            "mV; BLE and display suspended");
+  g_lan.stop();
   g_ble.stop();
   if (!g_display.lowBatteryLatched()) {
     g_display.renderLowBattery(g_battery_mv);
@@ -258,6 +261,7 @@ bool tryBatteryTimedFastPath(const epd::DeviceConfig& config) {
 
 [[noreturn]] void enterScheduledSleep(const epd::DeviceConfig& config) {
   renderCurrent(false);
+  g_lan.stop();
   g_ble.stop();
   const uint64_t now = unixNow();
   g_rtc_power.magic = kRtcPowerMagic;
@@ -362,6 +366,9 @@ void setup() {
   } else {
     TOOLKIT_LOG("ble", "BLE v4 service ready");
   }
+  if (!g_lan.begin()) {
+    TOOLKIT_LOG("lan", "LAN transport initialization failed");
+  }
   const bool deep_sleep_wake =
       esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_UNDEFINED;
   if (g_ble.owned() && !deep_sleep_wake) {
@@ -372,6 +379,7 @@ void setup() {
 
 void loop() {
   g_serial.loop();
+  g_lan.loop();
   g_ble.loop();
   handleKey();
   handleMainsPageTick();
@@ -409,6 +417,14 @@ void loop() {
   const bool factory_reset = g_ble.takeFactoryResetRequest();
   const bool restart = g_ble.takeRestartRequest();
   if (factory_reset || restart) {
+    if (factory_reset) {
+      String network_error;
+      if (!g_lan.factoryReset(network_error)) {
+        TOOLKIT_LOG("lan", String("factory reset failed: ") + network_error);
+      }
+    } else {
+      g_lan.stop();
+    }
     delay(250);
     ESP.restart();
   }
