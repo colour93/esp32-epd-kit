@@ -108,8 +108,13 @@ POST /api/v1/device/scan
 POST /api/v1/device/connect
 {"transport":"lan","id":"A1B2C3D4E5F6","secret":"<64 hex>"}
 
+POST /api/v1/device/connect
+{"transport":"lan","endpoint":"192.168.1.50:38474","secret":"<optional 64 hex>"}
+
 POST /api/v1/device/auto-connect
 {"transport":"lan"}
 ```
 
-`secret` 只在设备密钥尚未保存时提交。Agent 校验后将它写入操作系统凭据库；snapshot 只暴露候选设备的 `paired: true/false`，绝不返回密钥。BLE 使用相同接口并将 `transport` 设为 `ble`，且不接受 `secret`。
+`endpoint` 仅接受私有、链路本地或回环 IP，省略端口时默认使用 `38474`。IP 直连会从认证 greeting 获取稳定 device ID，因此密钥已保存时可省略 `secret`。Agent 校验新密钥后将它写入操作系统凭据库；snapshot 只暴露候选设备的 `paired: true/false`，绝不返回密钥。BLE 使用相同接口并将 `transport` 设为 `ble`，且不接受 `endpoint` 或 `secret`。
+
+Agent 另行保存上次活动传输和最近成功目标。重启后直接恢复 BLE 或 LAN 自动连接；若缓存的 DHCP endpoint 已失效，LAN adapter 会按稳定 device ID 回退到 mDNS 重新解析。
